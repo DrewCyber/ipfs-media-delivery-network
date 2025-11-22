@@ -2,11 +2,11 @@
 
 A Go application for automatic publishing of media collections to IPFS with announcement via Pubsub.
 
-## Current Status: Phase 1 Complete ✓
+## Current Status: Phase 2 Complete ✓
 
 ### Implemented Features
 
-**Phase 1: Basic structure and configuration**
+**Phase 1: Basic structure and configuration** ✅
 - ✅ Go module initialization with project structure
 - ✅ YAML configuration loading with IPFS mode selection (external/embedded)
 - ✅ Structured logging with file rotation and console output
@@ -14,6 +14,16 @@ A Go application for automatic publishing of media collections to IPFS with anno
 - ✅ CLI with flags support (--help, --version, --config, --ipfs-mode, etc.)
 - ✅ Configuration validation (ports, paths, IPFS mode)
 - ✅ Graceful shutdown with signal handling
+
+**Phase 2: External IPFS client and basic operations** ✅
+- ✅ IPFS Client interface for abstraction
+- ✅ External IPFS HTTP API client implementation
+- ✅ File upload to IPFS with options (pin, raw-leaves)
+- ✅ IPNS publish and resolve operations
+- ✅ Connection check with --check-ipfs flag
+- ✅ Test upload command with --test-upload flag
+- ✅ IPNS test command with --test-ipns flag
+- ✅ Version and node ID retrieval
 
 ### Project Structure
 
@@ -25,13 +35,17 @@ ipfs-media-delivery-network/
 ├── internal/
 │   ├── config/
 │   │   └── config.go         # Configuration management
+│   ├── ipfs/
+│   │   ├── client.go         # IPFS client interface
+│   │   └── external.go       # External IPFS HTTP API client
 │   ├── logger/
 │   │   └── logger.go         # Logging system
 │   └── lockfile/
 │       └── lockfile.go       # Lock file management
 ├── config.yaml               # Sample configuration
 ├── go.mod                    # Go module definition
-└── ipfs-publisher           # Compiled binary
+├── ipfs-publisher           # Compiled binary
+└── IMPLEMENTATION.md         # This file
 ```
 
 ## Building
@@ -65,6 +79,21 @@ go build -o ipfs-publisher ./cmd/ipfs-publisher
 ### Override IPFS Mode
 ```bash
 ./ipfs-publisher --ipfs-mode embedded
+```
+
+### Check IPFS Connection
+```bash
+./ipfs-publisher --check-ipfs
+```
+
+### Upload Test File
+```bash
+./ipfs-publisher --test-upload /path/to/file.mp3
+```
+
+### Test IPNS Operations
+```bash
+./ipfs-publisher --test-ipns
 ```
 
 ## Configuration
@@ -115,14 +144,48 @@ All Phase 1 tests pass:
 6. ✅ **Config validation**: Invalid IPFS mode rejected
 7. ✅ **Graceful shutdown**: Ctrl+C handled properly
 
-## Next Steps: Phase 2
+## Testing Phase 2
 
-Phase 2 will implement external IPFS client and basic file operations:
-- Connect to external IPFS node via HTTP API
-- Upload files to IPFS
-- Support for --nocopy and --pin options
-- IPNS operations
-- Error handling and retry logic
+All Phase 2 tests pass:
+
+1. ✅ **Check IPFS connection**: Successfully connects to external node
+   ```bash
+   ./ipfs-publisher --check-ipfs
+   # Output: Version and Node ID displayed
+   ```
+
+2. ✅ **Upload small file**: 43KB MP3 file uploaded successfully
+   ```bash
+   ./ipfs-publisher --test-upload test-media/winamp-it-really-whips-the-llamas-ass.mp3
+   # CID: bafkreid3cyrzhkewyf6pd4eqb2ughbaxtokpuwi7xeabgxk46yo6qerwya
+   ```
+
+3. ✅ **Upload large file**: 12MB MP3 file uploaded successfully
+   ```bash
+   ./ipfs-publisher --test-upload test-media/Prodigy_-_Smak_My_Bitch_Up.mp3
+   # CID: QmTDWHWuNoVK1pVPooLWsjUEjaYwRRwgmN22prRFd5yyPF
+   ```
+
+4. ✅ **Pinning works**: Files verified as pinned
+   ```bash
+   ipfs pin ls | grep QmTDWHWuNoVK1pVPooLWsjUEjaYwRRwgmN22prRFd5yyPF
+   # Output: QmTDWHWuNoVK1pVPooLWsjUEjaYwRRwgmN22prRFd5yyPF recursive
+   ```
+
+5. ✅ **IPNS operations**: Publish and resolve working
+   ```bash
+   ./ipfs-publisher --test-ipns
+   # Successfully published to IPNS and resolved back to CID
+   ```
+
+## Next Steps: Phase 3
+
+Phase 3 will implement embedded IPFS node functionality:
+- Repository initialization and management
+- Port availability checks
+- Node lifecycle management (start/stop)
+- Bootstrap peer connection
+- Same IPFSClient interface implementation
 
 ## Development
 
@@ -132,6 +195,8 @@ Phase 2 will implement external IPFS client and basic file operations:
 - `github.com/spf13/pflag` - CLI flags parsing
 - `github.com/sirupsen/logrus` - Structured logging
 - `gopkg.in/natefinch/lumberjack.v2` - Log rotation
+- `github.com/ipfs/go-ipfs-api` - IPFS HTTP API client
+- `github.com/ipfs/boxo` - IPFS primitives (CID, multiaddr, etc.)
 
 ### Directory Structure
 

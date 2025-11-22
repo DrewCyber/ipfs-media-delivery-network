@@ -1,84 +1,455 @@
-# ipfs-media-delivery-network
+# IPFS Media Collection Publisher
 
-# Децентрализованный сервис обмена медиа контентом поверх IPFS
+A Go application for automatic publishing of media collections to IPFS with announcement via Pubsub. The application monitors directories for media files, uploads them to IPFS, maintains an index, and publishes changes via IPNS and Pubsub.
 
-## 3 типа участников:
-1.1 ) Гости - самый широкий слой клиентов - read only. (Самый внешний слой, без хостинга IPFS нод)
-Любые плееры, которые зная CID контента могут его получить через публичные IPFS шлюзы.
-Мобильные приложения, локальные/embeded плееры и медиацентры, in-browser плееры.
-Могут по api подключаться к индексаторам и находить необохдимый контент.
+## Features
 
-1.2 ) Пользователи с IPFS бэкендом. (IPFS ноды и специальные клиенты)
-Если у плеера есть прямая интеграция с ipfs нодой по ключу, то пользователь может пинить контент своих плейлистов (и сами листы) в свои ipfs ноды.
-Логично, что ipfs ноды не хостятся на мобильных устройствах. Это могут быть клауд-сервисы типа pinata или self-hosted.
-Тут-же можно учитывать ipfs шлюзы, которые кэшируют контент (обычные ipfs ноды).
+### Current (Phase 1 & 2 Complete)
 
-2 ) Индексаторы - (IPFS + слой метаданых)
-Поисковик, который может поднять кто угодно и получить свой индекс.
-- собирают метаданные о контенте
-- строят поисковые индексы
-- предоставляют полнотекстовый поиск
-- валидируют наличие контента
-- строят рекомендации
-- участвуют в поддержке распространении актуальных метаданных
-- обновляют метаданные (проверка битрейта, обновление обложки, обновление тэгов и названий)
-У индексаторов будет достаточно данных для вышеуказанных задач.
+- ✅ **Configuration Management** - YAML-based configuration with validation
+- ✅ **IPFS Integration** - External IPFS node support via HTTP API
+- ✅ **File Upload** - Upload files to IPFS with configurable options (pin, raw-leaves)
+- ✅ **IPNS Support** - Publish and resolve IPNS names
+- ✅ **Logging** - Structured logging with file rotation and console output
+- ✅ **Lock File** - Prevents multiple instances from running simultaneously
+- ✅ **CLI Interface** - Comprehensive command-line interface with multiple flags
 
-3 ) Публикаторы (метаданные + контент)
-Самописное приложение - агент.
-Должен создавать/структурировать метаданные, предоставлять их индексаторам и самое главное - публиковать/хостить контент.
-Публиковать - заливать и пинить контент на внешние IPFS ноды.
-Хостить - если IPFS нода локально вместе с контентом, тогда добавлять контент через --nocopy
+### Coming Soon
 
----
-### Что это нам дает и какие бонусы от IPFS?
-- можно pin-ить данные на managed ipfs хостинги типа pinata.cloud.
-- кэширование контента на публичных ipfs шлюзах (снимает нагрузку с канала сидеров)
-- возможность раздавать контент даже не имея белого IP (через публичные шлюзы)
-- легпо поднять шлюз в приватные/оверлейные сети (tor/i2p)
-- возможность закешировать свою библиотеку на свой домашний ipfs, что гарантирует сохранность контента. Собрав коллекцию медиафайлов в плейлисты ты, придя домой, нажимаешь PIN all на свой ipfs сервер. И данные сами собой резервируются на твой домашний сервер. Можно быть уверенным, что никакой стриминг сервис их не удалит.
+- 🔄 Embedded IPFS node support
+- 🔄 PubSub announcements
+- 🔄 Directory monitoring and automatic uploads
+- 🔄 NDJSON index management
+- 🔄 State persistence and recovery
 
-## FAQ:
-### Почему не Personal streaming service? (Navidrome, Polaris)
-- такая реализация должна покрывать всё, что умеет personal streaming service
-- не нужен домен/ip
-- есть поиск по глобальному каталогу за пределами персональной коллекции
-- возможна интеграция с любым медиа плеером
+## Installation
 
-### Почему не soulseek (fileshare / torrents)?
-- главное отличие - прозрачная интеграция в любые медиаплееры. Контент доступен по прямой https ссылке
-- нет ценртального сервера, на который всё завязано
-- открытый протокол и транспорт (IPFS)
-- более гибкий поиск. можно реализовать что угодно, т.к. поисковик локальный и самописный
-- прямая интеграция в плееры без промежуточного скачивания
-- возможна самостоятельная реализация сервиса рекомендаций
+### Prerequisites
 
-### Почему в архитектуре не OrbitDB?
-ObritDB хранит записи базы с линками друг к другу (почти как blockchain)
-- индексатору для начала построения индекса нужно выкачивать полностью всю базу
-- ссылки на удалённые и недоступные данные всё ещё остаются в базе
-- на больших объемах и долгом времени использования база разрастется до неподъемных размеров
+- Go 1.21 or higher
+- External IPFS node (e.g., IPFS Desktop, kubo daemon) running on default port 5001
 
----
+### Build from Source
 
-## Транспорт и структура метаданных.
-Индексаторы должны иметь возможность однозначно определять публикатора по его публичному ключу, чтобы фильтровать битые/фейковые данные. Это позволяет IPNS.
-1) Публикатор заливает файлы в ipfs, для каждого генерирует метаданные.
-Структура метаданных на первом этапе плоская (<Имя файла> - <CID файла>). Но в дальнейшем можно расширять слой метаданных (<Имя файла> - <CID IPLD>).
-В IPLD может храниться json с описанием медиа файла, содержанием id3 тэга, ссылкой на CID обложки и ссылкой на CID самого файла.
-Либо IPLD с названием и обложкой альбома, содержимым CUE файла и CID на сам файл.
-В результате у публикатора получается огромный лист с его контентом в виде "название - cid". Этот лист он подписывает и публикует на него IPNS ссылку в DHT(ttl 24h).
-2) Публикатор оповещает в PubSub канале об обновлении ipns ссылки.
-3) Индексаторы, подписанные на PubSub получают IPNS ссылки на базы контента публикаторов. По этой ссылке мы получаем файл или папку с файлами в виде json листа со списком ссылок на метаданные/файлы.
-4) Индексатор выкачивает данные себе, строит поисковый индекс, проверяет наличие данных в IPFS. В индексе обязательно сохраняется публичный ключ публикатора для контроля качества контента, чтобы можно было при желании весь объём данных повысить / понизить в выдаче или совсем удалить из индекса.
+```bash
+git clone https://github.com/atregu/ipfs-publisher.git
+cd ipfs-publisher
+go build -o ipfs-publisher ./cmd/ipfs-publisher
+```
 
-Плейлист для музыкального плеера может представлять из себя список /ipfs /ipns ссылок, которые при необходимости резолвятся в https ссылку на публичный шлюз, либо при прямой интеграции плеера с ipfs предоставляют доступ к контенту.
+## Quick Start
 
-### Как вновь подключенным индексаторам найти корневые ipns ссылки у авторов без ожидания PubSub?
-В PubSub создается второй канал на который подписываются все паблишеры. Индексатор через этот канал просит всех продублировать данные и ждет ответы в основном канале.
+### 1. Initialize Configuration
 
+```bash
+./ipfs-publisher --init
+```
 
-### Если паблишер уходит с раздачи.
-1) IPNS протухает через 24 часа в DHT. Если паблишера нет в сети, тогда метаданные его коллекции становятся недоступными вместе с самим контентом. Если какая-то часть контента закеширована / запинена другими нодами, то она остается доступна. Метаданные к этому моменту должны быть уже на индексаторах и доступны для поиска.
-2) У индексаторов часть контента становится недоступна.
-Если паблишеры ушли, то часть CID будет недоступна для скачивания. Можно в фоновом режиме проверять ipfs dht findprovs <CID> и помечать, что контент недоступен с текущего момента.
+This creates a default `config.yaml` file in the current directory.
+
+### 2. Edit Configuration
+
+Edit `config.yaml` to add your media directories:
+
+```yaml
+directories:
+  - "/path/to/your/media"
+  - "/path/to/more/media"
+
+extensions:
+  - "mp3"
+  - "mp4"
+  - "mkv"
+  - "avi"
+  - "flac"
+```
+
+### 3. Check IPFS Connection
+
+```bash
+./ipfs-publisher --check-ipfs
+```
+
+Expected output:
+```
+✓ Connected to IPFS node
+  Version: 0.38.2
+  Node ID: 12D3KooW...
+```
+
+### 4. Test File Upload
+
+```bash
+./ipfs-publisher --test-upload /path/to/file.mp3
+```
+
+Expected output:
+```
+✓ Upload successful!
+  File: file.mp3
+  Size: 1234567 bytes
+  CID: QmXxx...
+  Pinned: true
+```
+
+## Usage
+
+### Command-Line Flags
+
+```
+  -c, --config string       Path to config file (default "./config.yaml")
+  -v, --version            Show version information
+  -h, --help               Show help message
+      --init               Initialize configuration and generate keys
+      --check-ipfs         Check IPFS connection and exit
+      --test-upload FILE   Upload a test file to IPFS and exit
+      --test-ipns          Test IPNS publish and resolve
+      --dry-run            Scan and show what would be processed without uploading
+      --ipfs-mode string   Override IPFS mode from config (external/embedded)
+```
+
+### Examples
+
+#### Display Help
+
+```bash
+./ipfs-publisher --help
+```
+
+#### Display Version
+
+```bash
+./ipfs-publisher --version
+```
+
+#### Check IPFS Connection
+
+```bash
+./ipfs-publisher --check-ipfs
+```
+
+Verifies connectivity to your IPFS node and displays version information.
+
+#### Upload a Test File
+
+```bash
+./ipfs-publisher --test-upload test.mp3
+```
+
+Uploads a single file to IPFS to verify your setup is working correctly.
+
+#### Test IPNS Operations
+
+```bash
+./ipfs-publisher --test-ipns
+```
+
+Tests IPNS publish and resolve functionality by uploading a test file, publishing it to IPNS, and then resolving the IPNS name.
+
+#### Use Custom Configuration
+
+```bash
+./ipfs-publisher --config /path/to/custom/config.yaml
+```
+
+#### Override IPFS Mode
+
+```bash
+./ipfs-publisher --ipfs-mode external
+```
+
+## Configuration
+
+The application uses a YAML configuration file. Here's a complete example:
+
+```yaml
+# IPFS node configuration
+ipfs:
+  # Mode: "external" (use existing IPFS node) or "embedded" (run IPFS inside app)
+  mode: "external"
+  
+  # External node settings (used when mode: external)
+  external:
+    api_url: "http://localhost:5001"
+    timeout: 300  # seconds
+    add_options:
+      nocopy: false      # Use filestore (requires external node support)
+      pin: true          # Pin uploaded files
+      chunker: "size-262144"  # Chunking strategy
+      raw_leaves: true   # Use raw leaves for UnixFS
+
+  # Embedded node settings (used when mode: embedded) - Coming soon
+  embedded:
+    repo_path: "~/.ipfs_publisher/ipfs-repo"
+    swarm_port: 4002
+    api_port: 5002
+    gateway_port: 8081
+
+# PubSub configuration - Coming soon
+pubsub:
+  topic: "mdn/collections/announce"
+  announce_interval: 3600  # seconds
+
+# Directories to monitor
+directories:
+  - "~/media"
+  - "/mnt/storage/music"
+
+# File extensions to process (case-insensitive)
+extensions:
+  - "mp3"
+  - "mp4"
+  - "mkv"
+  - "avi"
+  - "flac"
+  - "wav"
+
+# Logging configuration
+logging:
+  level: "info"  # debug, info, warn, error
+  file: "~/.ipfs_publisher/logs/app.log"
+  max_size: 100  # MB
+  max_backups: 5
+  console: true  # Also log to console
+
+# Application behavior
+behavior:
+  scan_interval: 10  # seconds
+  batch_size: 10
+  progress_bar: true
+  state_save_interval: 60  # seconds
+```
+
+### Configuration Options
+
+#### IPFS Mode
+
+- **external**: Connects to an existing IPFS node (e.g., IPFS Desktop, kubo daemon)
+- **embedded**: Runs a full IPFS node inside the application (coming soon)
+
+#### Add Options
+
+- **pin** (boolean): Pin uploaded files to prevent garbage collection
+- **nocopy** (boolean): Use filestore (requires external node with filestore enabled)
+- **chunker** (string): Chunking strategy (e.g., "size-262144")
+- **raw_leaves** (boolean): Use raw leaves for UnixFS
+
+#### Logging Levels
+
+- **debug**: Detailed information for debugging
+- **info**: General informational messages
+- **warn**: Warning messages
+- **error**: Error messages only
+
+## Testing
+
+### Phase 2 Test Results
+
+All Phase 2 tests pass successfully:
+
+#### Test 1: Check Version
+```bash
+$ ./ipfs-publisher --version
+ipfs-publisher version 0.1.0
+```
+
+#### Test 2: Check IPFS Connection
+```bash
+$ ./ipfs-publisher --check-ipfs
+✓ Connected to IPFS node
+  Version: 0.38.2
+  Node ID: 12D3KooWNZ9Ma5sMmcr3brheC685dgrKJaM9SdhZrHojpKfywjg4
+```
+
+#### Test 3: Upload File with Pin
+```bash
+$ ./ipfs-publisher --test-upload file.mp3
+✓ Upload successful!
+  CID: bafkreid3cyrzhkewyf6pd4eqb2ughbaxtokpuwi7xeabgxk46yo6qerwya
+  Pinned: true
+
+$ ipfs pin ls | grep bafkreid3cyrzhkewyf6pd4eqb2ughbaxtokpuwi7xeabgxk46yo6qerwya
+bafkreid3cyrzhkewyf6pd4eqb2ughbaxtokpuwi7xeabgxk46yo6qerwya recursive
+```
+
+#### Test 4: Upload File without Pin
+```bash
+$ ./ipfs-publisher --config config-nopin.yaml --test-upload file.txt
+✓ Upload successful!
+  CID: bafkreieff4wdvvdsgwxfucfl5bxuinqh4lb25omqiqwe35uxb7xzpahhuy
+  Pinned: false
+
+$ ipfs pin ls | grep bafkreieff4wdvvdsgwxfucfl5bxuinqh4lb25omqiqwe35uxb7xzpahhuy
+(no output - file is not pinned)
+```
+
+#### Test 5: IPNS Operations
+```bash
+$ ./ipfs-publisher --test-ipns
+1. Uploading test content to IPFS...
+   CID: bafkreigawy2oq47r6rvwok3q5u7khmsvfd5r6san657a2k2basbxsiomny
+2. Publishing to IPNS...
+   IPNS Name: k51qzi5uqu5dkweh3vfy3ac59oobbnehs3ojsno0sog1nbvc70kt7tgbxvmqgh
+   Points to: /ipfs/bafkreigawy2oq47r6rvwok3q5u7khmsvfd5r6san657a2k2basbxsiomny
+3. Resolving IPNS name...
+   Resolved to: /ipfs/bafkreigawy2oq47r6rvwok3q5u7khmsvfd5r6san657a2k2basbxsiomny
+✓ IPNS test successful!
+```
+
+## Project Structure
+
+```
+ipfs-publisher/
+├── cmd/
+│   └── ipfs-publisher/
+│       └── main.go              # Application entry point
+├── internal/
+│   ├── config/
+│   │   └── config.go            # Configuration management
+│   ├── ipfs/
+│   │   ├── client.go            # IPFS client interface
+│   │   └── external.go          # External IPFS HTTP API client
+│   ├── logger/
+│   │   └── logger.go            # Logging system
+│   └── lockfile/
+│       └── lockfile.go          # Lock file management
+├── config.yaml                  # Sample configuration
+├── go.mod                       # Go module definition
+├── README.md                    # This file
+└── IMPLEMENTATION.md            # Implementation details
+```
+
+## Application Data
+
+The application stores its data in `~/.ipfs_publisher/`:
+
+```
+~/.ipfs_publisher/
+├── .ipfs_publisher.lock         # Lock file (prevents multiple instances)
+├── logs/
+│   └── app.log                  # Application logs (rotated)
+├── keys/                        # IPNS keys (coming soon)
+│   ├── private.key
+│   └── public.key
+├── state.json                   # Application state (coming soon)
+└── ipfs-repo/                   # Embedded IPFS repo (coming soon, embedded mode only)
+```
+
+## Troubleshooting
+
+### IPFS Node Not Available
+
+**Problem**: `IPFS node not available` error
+
+**Solution**: 
+1. Make sure your IPFS node is running: `ipfs daemon` or start IPFS Desktop
+2. Verify the API URL in your config matches your node: default is `http://localhost:5001`
+3. Check IPFS is accessible: `ipfs id`
+
+### Lock File Error
+
+**Problem**: `another instance is already running` error
+
+**Solution**:
+1. Check if another instance is running: `ps aux | grep ipfs-publisher`
+2. If not, remove stale lock file: `rm ~/.ipfs_publisher/.ipfs_publisher.lock`
+
+### Files Not Being Pinned
+
+**Problem**: Uploaded files are not pinned
+
+**Solution**:
+1. Check your config: `add_options.pin` should be `true`
+2. Verify with test upload: `./ipfs-publisher --test-upload file.mp3`
+3. The output should show `Pinned: true`
+
+### Permission Denied
+
+**Problem**: Permission errors accessing directories
+
+**Solution**:
+1. Check directory permissions: `ls -la /path/to/directory`
+2. Ensure the user running ipfs-publisher has read access
+3. For media directories, `chmod -R +r /path/to/directory` may help
+
+## Development
+
+### Dependencies
+
+```bash
+go get github.com/spf13/viper           # Configuration
+go get github.com/spf13/pflag           # CLI flags
+go get github.com/sirupsen/logrus       # Logging
+go get gopkg.in/natefinch/lumberjack.v2 # Log rotation
+go get github.com/ipfs/go-ipfs-api      # IPFS HTTP API
+```
+
+### Building
+
+```bash
+go build -o ipfs-publisher ./cmd/ipfs-publisher
+```
+
+### Running Tests
+
+```bash
+go test ./...
+```
+
+## Roadmap
+
+### Phase 1: Basic Infrastructure ✅ Complete
+- Configuration management
+- Logging system
+- Lock file mechanism
+- CLI interface
+
+### Phase 2: External IPFS Integration ✅ Complete
+- HTTP API client
+- File upload with options
+- IPNS operations
+- Connection testing
+
+### Phase 3: Embedded IPFS Node (In Progress)
+- Repository initialization
+- Node lifecycle management
+- Port configuration
+- Bootstrap peers
+
+### Phase 4: PubSub Announcements
+- Embedded libp2p PubSub node
+- Message signing
+- Periodic announcements
+- Message format v3
+
+### Phase 5: Directory Monitoring
+- File system watching
+- Change detection
+- NDJSON index creation
+- Incremental updates
+
+### Phase 6: State Management
+- State persistence
+- Recovery after restart
+- Index management
+- Version tracking
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+[License details to be added]
+
+## Support
+
+For issues and questions:
+- GitHub Issues: [https://github.com/atregu/ipfs-publisher/issues](https://github.com/atregu/ipfs-publisher/issues)
+- Documentation: See IMPLEMENTATION.md for detailed implementation notes
+
+## Acknowledgments
+
+- Built with [kubo](https://github.com/ipfs/kubo) IPFS implementation
+- Uses [go-ipfs-api](https://github.com/ipfs/go-ipfs-api) for HTTP API communication
+- Structured logging with [logrus](https://github.com/sirupsen/logrus)

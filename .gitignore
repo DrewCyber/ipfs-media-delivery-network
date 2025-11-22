@@ -1,5 +1,8 @@
 # Binaries
 /ipfs-publisher
 
+# Test data
+/test-media/
+
 # Docs
 /notes/
