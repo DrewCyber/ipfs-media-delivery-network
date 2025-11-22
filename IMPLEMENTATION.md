@@ -2,7 +2,7 @@
 
 A Go application for automatic publishing of media collections to IPFS with announcement via Pubsub.
 
-## Current Status: Phase 2 Complete ✓
+## Current Status: Phase 3 Complete ✓
 
 ### Implemented Features
 
@@ -25,6 +25,16 @@ A Go application for automatic publishing of media collections to IPFS with anno
 - ✅ IPNS test command with --test-ipns flag
 - ✅ Version and node ID retrieval
 
+**Phase 3: Embedded IPFS node** ✅
+- ✅ Embedded IPFS node implementation using kubo v0.38.2 core
+- ✅ Plugin system integration (flatfs, levelds, badgerds datastores)
+- ✅ Repository initialization and management
+- ✅ Custom port configuration (swarm, API, gateway)
+- ✅ Port availability checking before startup
+- ✅ Full IPFS operations support (add, pin, IPNS publish/resolve)
+- ✅ Repository persistence between runs
+- ✅ Graceful node shutdown
+
 ### Project Structure
 
 ```
@@ -37,7 +47,9 @@ ipfs-media-delivery-network/
 │   │   └── config.go         # Configuration management
 │   ├── ipfs/
 │   │   ├── client.go         # IPFS client interface
-│   │   └── external.go       # External IPFS HTTP API client
+│   │   ├── external.go       # External IPFS HTTP API client
+│   │   ├── embedded.go       # Embedded IPFS node implementation (kubo v0.38.2)
+│   │   └── repo.go           # Repository initialization and management
 │   ├── logger/
 │   │   └── logger.go         # Logging system
 │   └── lockfile/
@@ -45,6 +57,7 @@ ipfs-media-delivery-network/
 ├── config.yaml               # Sample configuration
 ├── go.mod                    # Go module definition
 ├── ipfs-publisher           # Compiled binary
+├── README.md                 # User documentation
 └── IMPLEMENTATION.md         # This file
 ```
 
@@ -178,14 +191,65 @@ All Phase 2 tests pass:
    # Successfully published to IPNS and resolved back to CID
    ```
 
-## Next Steps: Phase 3
+## Testing Phase 3
 
-Phase 3 will implement embedded IPFS node functionality:
-- Repository initialization and management
-- Port availability checks
-- Node lifecycle management (start/stop)
-- Bootstrap peer connection
-- Same IPFSClient interface implementation
+All Phase 3 tests pass:
+
+1. ✅ **Embedded node startup**: Node starts successfully with custom ports
+   ```bash
+   ./ipfs-publisher --ipfs-mode embedded --check-ipfs
+   # Output: Peer ID: QmNYH7Z17TCKkwGf45H5qxbRjjbgEmT42EbZM37uasLoYb
+   # Listening on 13 addresses
+   ```
+
+2. ✅ **File upload with embedded node**: 33 byte test file uploaded
+   ```bash
+   ./ipfs-publisher --ipfs-mode embedded --test-upload test.mp3
+   # CID: bafkreifddhf4n3f64dknxbpfrp7bbt5luzg643mtmzf5bwde6wmmizwuae
+   # Pinned: true
+   ```
+
+3. ✅ **IPNS with embedded node**: Publish and resolve working
+   ```bash
+   ./ipfs-publisher --ipfs-mode embedded --test-ipns
+   # IPNS Name: k2k4r8jhoqvl742b4riwpn8uozsroa8bn8nb28myr9uzgr9mfc8x16qg
+   # Successfully resolved to CID
+   ```
+
+4. ✅ **Repository persistence**: Same Peer ID across runs
+   ```bash
+   # First run creates repo
+   ./ipfs-publisher --ipfs-mode embedded --check-ipfs
+   # Peer ID: QmNYH7Z17TCKkwGf45H5qxbRjjbgEmT42EbZM37uasLoYb
+   
+   # Second run uses existing repo
+   ./ipfs-publisher --ipfs-mode embedded --check-ipfs
+   # Peer ID: QmNYH7Z17TCKkwGf45H5qxbRjjbgEmT42EbZM37uasLoYb (same)
+   ```
+
+5. ✅ **Port checking**: Port availability verified before startup
+   ```bash
+   # Ports 4002 (swarm), 5002 (API), 8081 (gateway) checked
+   ```
+
+6. ✅ **Plugin system**: Datastore plugins (flatfs, levelds, badgerds) loaded correctly
+   ```bash
+   # No "unknown datastore type" errors
+   # Repository created with flatfs datastore
+   ```
+
+7. ✅ **Graceful shutdown**: Node stops cleanly
+   ```bash
+   # SIGINT handled, repository closed properly
+   ```
+
+## Next Steps: Phase 4
+
+Phase 4 will implement PubSub announcements:
+- PubSub topic subscription and publishing
+- Collection announcement messages
+- Periodic re-announcements
+- Message format validation
 
 ## Development
 
@@ -195,8 +259,34 @@ Phase 3 will implement embedded IPFS node functionality:
 - `github.com/spf13/pflag` - CLI flags parsing
 - `github.com/sirupsen/logrus` - Structured logging
 - `gopkg.in/natefinch/lumberjack.v2` - Log rotation
-- `github.com/ipfs/go-ipfs-api` - IPFS HTTP API client
-- `github.com/ipfs/boxo` - IPFS primitives (CID, multiaddr, etc.)
+- `github.com/ipfs/go-ipfs-api` - IPFS HTTP API client (external mode)
+- `github.com/ipfs/kubo` v0.38.2 - IPFS core implementation (embedded mode)
+- `github.com/ipfs/boxo` - IPFS primitives (CID, files, path, etc.)
+- `github.com/libp2p/go-libp2p` - P2P networking
+
+### Technical Notes
+
+#### Kubo v0.38.2 API Changes
+When implementing embedded mode, we encountered several API changes in kubo v0.38.2:
+- `coreiface` moved from `github.com/ipfs/boxo/coreiface` to `github.com/ipfs/kubo/core/coreiface`
+- `Add()` method now requires `files.Node` instead of `io.Reader`
+- `Pin` option signature changed to take two parameters: `options.Unixfs.Pin(bool, string)`
+- Path parsing now uses `path.NewPath()` from `github.com/ipfs/boxo/path`
+
+#### Plugin System
+Embedded mode requires proper datastore plugin initialization:
+- Kubo preloads plugins via `plugin/loader/preload.go`
+- Import plugins with blank imports: `_ "github.com/ipfs/kubo/plugin/plugins/flatfs"`
+- Do NOT manually call `loader.Preload()` - it causes duplicates
+- Use `loader.NewPluginLoader("")` to work with preloaded plugins
+- Call `Initialize()` and `Inject()` before repository operations
+
+#### Repository Management
+- Repository created at configured path (default: `~/.ipfs_publisher/ipfs-repo`)
+- Uses flatfs datastore by default
+- Persists between runs (same Peer ID)
+- Custom ports avoid conflicts with existing IPFS nodes
+- Port availability checked before startup
 
 ### Directory Structure
 

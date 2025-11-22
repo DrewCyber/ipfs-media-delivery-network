@@ -3,7 +3,7 @@
 # IPFS node configuration
 ipfs:
   # Mode: "external" (use existing IPFS node) or "embedded" (run IPFS inside app)
-  mode: "external"
+  mode: "embedded"
   
   # External node settings (used when mode: external)
   external:
@@ -45,11 +45,11 @@ directories:
 # File extensions to process (case-insensitive)
 extensions:
   - "mp3"
+  - "flac"
+  - "wav"
   - "mp4"
   - "mkv"
   - "avi"
-  - "flac"
-  - "wav"
 
 # Logging
 logging:

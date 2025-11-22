@@ -4,19 +4,19 @@ A Go application for automatic publishing of media collections to IPFS with anno
 
 ## Features
 
-### Current (Phase 1 & 2 Complete)
+### Current (Phase 1, 2 & 3 Complete)
 
 - ✅ **Configuration Management** - YAML-based configuration with validation
 - ✅ **IPFS Integration** - External IPFS node support via HTTP API
+- ✅ **Embedded IPFS Node** - Built-in IPFS node with custom ports and repository
 - ✅ **File Upload** - Upload files to IPFS with configurable options (pin, raw-leaves)
-- ✅ **IPNS Support** - Publish and resolve IPNS names
+- ✅ **IPNS Support** - Publish and resolve IPNS names (works with both modes)
 - ✅ **Logging** - Structured logging with file rotation and console output
 - ✅ **Lock File** - Prevents multiple instances from running simultaneously
 - ✅ **CLI Interface** - Comprehensive command-line interface with multiple flags
 
 ### Coming Soon
 
-- 🔄 Embedded IPFS node support
 - 🔄 PubSub announcements
 - 🔄 Directory monitoring and automatic uploads
 - 🔄 NDJSON index management
@@ -27,12 +27,13 @@ A Go application for automatic publishing of media collections to IPFS with anno
 ### Prerequisites
 
 - Go 1.21 or higher
-- External IPFS node (e.g., IPFS Desktop, kubo daemon) running on default port 5001
+- **Optional**: External IPFS node (e.g., IPFS Desktop, kubo daemon) if using `external` mode
+  - Not required for `embedded` mode - the application runs its own IPFS node
 
 ### Build from Source
 
 ```bash
-git clone https://github.com/atregu/ipfs-publisher.git
+git clone https://github.com/user/ipfs-publisher.git
 cd ipfs-publisher
 go build -o ipfs-publisher ./cmd/ipfs-publisher
 ```
@@ -64,10 +65,12 @@ extensions:
   - "flac"
 ```
 
-### 3. Check IPFS Connection
+### 3. Choose IPFS Mode
+
+#### Option A: External Mode (requires running IPFS node)
 
 ```bash
-./ipfs-publisher --check-ipfs
+./ipfs-publisher --ipfs-mode external --check-ipfs
 ```
 
 Expected output:
@@ -75,6 +78,19 @@ Expected output:
 ✓ Connected to IPFS node
   Version: 0.38.2
   Node ID: 12D3KooW...
+```
+
+#### Option B: Embedded Mode (standalone)
+
+```bash
+./ipfs-publisher --ipfs-mode embedded --check-ipfs
+```
+
+Expected output:
+```
+✓ Embedded IPFS node started successfully. Peer ID: QmXxx...
+✓ Listening on 13 addresses
+✓ Connected to IPFS node
 ```
 
 ### 4. Test File Upload
@@ -155,7 +171,24 @@ Tests IPNS publish and resolve functionality by uploading a test file, publishin
 #### Override IPFS Mode
 
 ```bash
+# Use external IPFS node
 ./ipfs-publisher --ipfs-mode external
+
+# Use embedded IPFS node
+./ipfs-publisher --ipfs-mode embedded
+```
+
+#### Test Embedded IPFS Mode
+
+```bash
+# Test file upload with embedded node
+./ipfs-publisher --ipfs-mode embedded --test-upload test.mp3
+
+# Test IPNS with embedded node
+./ipfs-publisher --ipfs-mode embedded --test-ipns
+
+# Check embedded node status
+./ipfs-publisher --ipfs-mode embedded --check-ipfs
 ```
 
 ## Configuration
@@ -178,12 +211,12 @@ ipfs:
       chunker: "size-262144"  # Chunking strategy
       raw_leaves: true   # Use raw leaves for UnixFS
 
-  # Embedded node settings (used when mode: embedded) - Coming soon
+  # Embedded node settings (used when mode: embedded)
   embedded:
-    repo_path: "~/.ipfs_publisher/ipfs-repo"
-    swarm_port: 4002
-    api_port: 5002
-    gateway_port: 8081
+    repo_path: "~/.ipfs_publisher/ipfs-repo"  # Where to store IPFS data
+    swarm_port: 4002      # P2P swarm port (default: 4002)
+    api_port: 5002        # API port (default: 5002)
+    gateway_port: 8081    # Gateway port (default: 8081)
 
 # PubSub configuration - Coming soon
 pubsub:
@@ -225,7 +258,17 @@ behavior:
 #### IPFS Mode
 
 - **external**: Connects to an existing IPFS node (e.g., IPFS Desktop, kubo daemon)
-- **embedded**: Runs a full IPFS node inside the application (coming soon)
+  - Requires a running IPFS node on the configured API port (default: 5001)
+  - Uses HTTP API to interact with the node
+  - Lower memory footprint as IPFS runs in a separate process
+  - Good for development or when IPFS Desktop is already running
+
+- **embedded**: Runs a full IPFS node inside the application
+  - No external IPFS node required - fully standalone
+  - Creates its own repository at the configured path
+  - Uses custom ports to avoid conflicts with existing IPFS nodes
+  - Higher memory footprint but zero external dependencies
+  - Good for production deployments or isolated environments
 
 #### Add Options
 
@@ -243,9 +286,9 @@ behavior:
 
 ## Testing
 
-### Phase 2 Test Results
+### Phase 2 Test Results (External Mode)
 
-All Phase 2 tests pass successfully:
+All Phase 2 tests pass successfully with external IPFS mode:
 
 #### Test 1: Check Version
 ```bash
@@ -255,7 +298,7 @@ ipfs-publisher version 0.1.0
 
 #### Test 2: Check IPFS Connection
 ```bash
-$ ./ipfs-publisher --check-ipfs
+$ ./ipfs-publisher --ipfs-mode external --check-ipfs
 ✓ Connected to IPFS node
   Version: 0.38.2
   Node ID: 12D3KooWNZ9Ma5sMmcr3brheC685dgrKJaM9SdhZrHojpKfywjg4
@@ -263,7 +306,7 @@ $ ./ipfs-publisher --check-ipfs
 
 #### Test 3: Upload File with Pin
 ```bash
-$ ./ipfs-publisher --test-upload file.mp3
+$ ./ipfs-publisher --ipfs-mode external --test-upload file.mp3
 ✓ Upload successful!
   CID: bafkreid3cyrzhkewyf6pd4eqb2ughbaxtokpuwi7xeabgxk46yo6qerwya
   Pinned: true
@@ -285,7 +328,7 @@ $ ipfs pin ls | grep bafkreieff4wdvvdsgwxfucfl5bxuinqh4lb25omqiqwe35uxb7xzpahhuy
 
 #### Test 5: IPNS Operations
 ```bash
-$ ./ipfs-publisher --test-ipns
+$ ./ipfs-publisher --ipfs-mode external --test-ipns
 1. Uploading test content to IPFS...
    CID: bafkreigawy2oq47r6rvwok3q5u7khmsvfd5r6san657a2k2basbxsiomny
 2. Publishing to IPNS...
@@ -294,6 +337,52 @@ $ ./ipfs-publisher --test-ipns
 3. Resolving IPNS name...
    Resolved to: /ipfs/bafkreigawy2oq47r6rvwok3q5u7khmsvfd5r6san657a2k2basbxsiomny
 ✓ IPNS test successful!
+```
+
+### Phase 3 Test Results (Embedded Mode)
+
+All Phase 3 tests pass successfully with embedded IPFS mode:
+
+#### Test 1: Embedded Node Startup
+```bash
+$ ./ipfs-publisher --ipfs-mode embedded --check-ipfs
+✓ Embedded IPFS node started successfully. Peer ID: QmNYH7Z17TCKkwGf45H5qxbRjjbgEmT42EbZM37uasLoYb
+✓ Listening on 13 addresses
+✓ Connected to IPFS node
+```
+
+#### Test 2: File Upload with Embedded Node
+```bash
+$ ./ipfs-publisher --ipfs-mode embedded --test-upload test.mp3
+✓ Upload successful!
+  File: test.mp3
+  Size: 33 bytes
+  CID: bafkreifddhf4n3f64dknxbpfrp7bbt5luzg643mtmzf5bwde6wmmizwuae
+  Pinned: true
+```
+
+#### Test 3: IPNS with Embedded Node
+```bash
+$ ./ipfs-publisher --ipfs-mode embedded --test-ipns
+1. Uploading test content to IPFS...
+   CID: bafkreigawy2oq47r6rvwok3q5u7khmsvfd5r6san657a2k2basbxsiomny
+2. Publishing to IPNS...
+   IPNS Name: k2k4r8jhoqvl742b4riwpn8uozsroa8bn8nb28myr9uzgr9mfc8x16qg
+   Points to: /ipfs/bafkreigawy2oq47r6rvwok3q5u7khmsvfd5r6san657a2k2basbxsiomny
+3. Resolving IPNS name...
+   Resolved to: bafkreigawy2oq47r6rvwok3q5u7khmsvfd5r6san657a2k2basbxsiomny
+✓ IPNS test successful!
+```
+
+#### Test 4: Repository Persistence
+```bash
+$ ./ipfs-publisher --ipfs-mode embedded --check-ipfs
+# First run creates repository
+✓ Embedded IPFS node started successfully. Peer ID: QmNYH7Z17TCKkwGf45H5qxbRjjbgEmT42EbZM37uasLoYb
+
+$ ./ipfs-publisher --ipfs-mode embedded --check-ipfs
+# Second run uses existing repository (same Peer ID)
+✓ Embedded IPFS node started successfully. Peer ID: QmNYH7Z17TCKkwGf45H5qxbRjjbgEmT42EbZM37uasLoYb
 ```
 
 ## Project Structure
@@ -308,7 +397,9 @@ ipfs-publisher/
 │   │   └── config.go            # Configuration management
 │   ├── ipfs/
 │   │   ├── client.go            # IPFS client interface
-│   │   └── external.go          # External IPFS HTTP API client
+│   │   ├── external.go          # External IPFS HTTP API client
+│   │   ├── embedded.go          # Embedded IPFS node implementation
+│   │   └── repo.go              # Embedded node repository management
 │   ├── logger/
 │   │   └── logger.go            # Logging system
 │   └── lockfile/

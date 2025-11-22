@@ -327,8 +327,23 @@ func createIPFSClient(cfg *config.Config) (ipfs.Client, error) {
 		return client, nil
 	}
 
-	// Embedded mode not yet implemented
-	return nil, fmt.Errorf("embedded IPFS mode not yet implemented")
+	// Embedded mode
+	if cfg.IPFS.Mode == config.IPFSModeEmbedded {
+		logger.Info("Starting embedded IPFS node...")
+		client, err := ipfs.NewEmbeddedClient(&cfg.IPFS.Embedded)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create embedded IPFS client: %w", err)
+		}
+
+		// Start the embedded node
+		if err := client.Start(); err != nil {
+			return nil, fmt.Errorf("failed to start embedded IPFS node: %w", err)
+		}
+
+		return client, nil
+	}
+
+	return nil, fmt.Errorf("invalid IPFS mode: %s", cfg.IPFS.Mode)
 }
 
 // checkIPFSConnection checks if IPFS node is available
