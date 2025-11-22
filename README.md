@@ -4,7 +4,7 @@ A Go application for automatic publishing of media collections to IPFS with anno
 
 ## Features
 
-### Current (Phase 1-5 Complete)
+### Current (Phase 1-6 Complete)
 
 - ✅ **Configuration Management** - YAML-based configuration with validation
 - ✅ **IPFS Integration** - External IPFS node support via HTTP API
@@ -17,13 +17,13 @@ A Go application for automatic publishing of media collections to IPFS with anno
 - ✅ **NDJSON Index** - Media collection index with sequential IDs
 - ✅ **State Management** - Persistent state with change detection
 - ✅ **Progress Bar** - Visual feedback for batch uploads
+- ✅ **IPNS Key Management** - Ed25519 keypair generation and secure storage
 - ✅ **Logging** - Structured logging with file rotation and console output
 - ✅ **Lock File** - Prevents multiple instances from running simultaneously
 - ✅ **CLI Interface** - Comprehensive command-line interface with multiple flags
 
 ### Coming Soon
 
-- 🔄 IPNS key management and publishing
 - 🔄 Real-time directory monitoring with fsnotify
 - 🔄 Automatic PubSub announcements on IPNS updates
 - 🔄 File change detection and incremental updates

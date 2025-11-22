@@ -15,9 +15,10 @@ type AddOptions struct {
 
 // IPNSPublishOptions contains options for IPNS publishing
 type IPNSPublishOptions struct {
-	Key      string // IPNS key name
-	Lifetime string // Record lifetime (e.g., "24h")
-	TTL      string // TTL for the record
+	Key          string // IPNS key name
+	Lifetime     string // Record lifetime (e.g., "24h")
+	TTL          string // TTL for the record
+	AllowOffline bool   // Allow offline publishing (local only, no DHT)
 }
 
 // AddResult contains the result of adding a file to IPFS

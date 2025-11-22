@@ -308,6 +308,11 @@ func (c *EmbeddedClient) PublishIPNS(ctx context.Context, cid string, opts IPNSP
 		}
 	}
 
+	// Allow offline publishing if requested (local only, no DHT)
+	if opts.AllowOffline {
+		publishOpts = append(publishOpts, options.Name.AllowOffline(true))
+	}
+
 	// Publish
 	entry, err := c.api.Name().Publish(ctx, p, publishOpts...)
 	if err != nil {

@@ -15,6 +15,7 @@ import (
 	"github.com/atregu/ipfs-publisher/internal/config"
 	"github.com/atregu/ipfs-publisher/internal/index"
 	"github.com/atregu/ipfs-publisher/internal/ipfs"
+	"github.com/atregu/ipfs-publisher/internal/keys"
 	"github.com/atregu/ipfs-publisher/internal/lockfile"
 	"github.com/atregu/ipfs-publisher/internal/logger"
 	"github.com/atregu/ipfs-publisher/internal/pubsub"
@@ -755,7 +756,7 @@ func runScan(cfg *config.Config, ipfsClient ipfs.Client, dryRun bool) error {
 
 	logger.Infof("Processing complete: %d uploaded, %d skipped, %d errors", processedCount, skippedCount, errorCount)
 
-	// Save index
+	// Save index and publish to IPNS if files were processed
 	if processedCount > 0 {
 		if err := indexMgr.Save(); err != nil {
 			return fmt.Errorf("failed to save index: %w", err)
@@ -780,6 +781,34 @@ func runScan(cfg *config.Config, ipfsClient ipfs.Client, dryRun bool) error {
 		logger.Infof("Index uploaded to IPFS: %s", indexResult.CID)
 		stateManager.SetLastIndexCID(indexResult.CID)
 		stateManager.IncrementVersion()
+
+		// Initialize key manager
+		keyMgr := keys.New(filepath.Join(getBaseDir(), "keys"))
+		if err := keyMgr.Initialize(); err != nil {
+			return fmt.Errorf("failed to initialize keys: %w", err)
+		}
+
+		// Publish to IPNS (with short timeout to avoid hanging)
+		// Note: IPNS publishing may timeout if there are no DHT peers available
+		logger.Info("Publishing to IPNS...")
+		ipnsCtx, ipnsCancel := context.WithTimeout(ctx, 10*time.Second)
+		defer ipnsCancel()
+
+		ipnsResult, err := ipfsClient.PublishIPNS(ipnsCtx, indexResult.CID, ipfs.IPNSPublishOptions{
+			Key:          "self",
+			Lifetime:     "24h",
+			TTL:          "1h",
+			AllowOffline: true, // Allow local-only IPNS (no DHT required)
+		})
+		if err != nil {
+			logger.Warnf("Failed to publish IPNS (this is expected without DHT peers): %v", err)
+			logger.Info("   IPNS keys are ready for future publishing when network is available")
+			// Don't fail the entire operation if IPNS fails
+		} else {
+			logger.Infof("✓ Published to IPNS: %s", ipnsResult.Name)
+			logger.Infof("   Points to: %s", ipnsResult.Value)
+			stateManager.SetIPNS(ipnsResult.Name)
+		}
 
 		// Save state
 		if err := stateManager.Save(); err != nil {
