@@ -42,15 +42,16 @@ Go application for automatic publishing of media collections to IPFS with announ
 
 The application supports two modes of IPFS node operation:
 
-**External Mode (default):**
-- Connect to an existing IPFS node (e.g., IPFS Desktop, kubo daemon)
-- Use HTTP API for file operations (add, pin, get)
-- Recommended for users who already run IPFS node
-
-**Embedded Mode:**
+**Embedded Mode (default):**
 - Launch a full-featured IPFS node inside the application
 - Complete IPFS functionality including DHT, bitswap, and content routing
-- Used when user doesn't have external IPFS node or prefers isolation
+- Zero external dependencies - fully standalone
+- Recommended for most users and production deployments
+
+**External Mode:**
+- Connect to an existing IPFS node (e.g., IPFS Desktop, kubo daemon)
+- Use HTTP API for file operations (add, pin, get)
+- Useful for development or when IPFS Desktop is already running
 
 **PubSub Provider:**
 - **Always uses embedded implementation** regardless of IPFS mode
@@ -324,8 +325,8 @@ Default path: `./config.yaml` or `~/.ipfs_publisher/config.yaml`
 ```yaml
 # IPFS node configuration
 ipfs:
-  # Mode: "external" (use existing IPFS node) or "embedded" (run IPFS inside app)
-  mode: "external"  # default
+  # Mode: "embedded" (run IPFS inside app) or "external" (use existing IPFS node)
+  mode: "embedded"  # default
   
   # External node settings (used when mode: external)
   external:
@@ -1574,31 +1575,7 @@ sudo systemctl status ipfs-publisher
 
 ## 16. Configuration Examples
 
-### Example 1: External Mode (Default)
-```yaml
-ipfs:
-  mode: "external"
-  
-  external:
-    api_url: "http://localhost:5001"
-    timeout: 300
-    add_options:
-      nocopy: true  # Uses filestore
-      pin: true
-      
-pubsub:
-  topic: "mdn/collections/announce"
-  announce_interval: 3600
-
-directories:
-  - "/home/user/media"
-
-extensions:
-  - "mp3"
-  - "mkv"
-```
-
-### Example 2: Embedded Mode (Isolated)
+### Example 1: Embedded Mode (Default)
 ```yaml
 ipfs:
   mode: "embedded"
@@ -1616,6 +1593,31 @@ ipfs:
     gc:
       enabled: true
       interval: 86400
+      
+pubsub:
+  topic: "mdn/collections/announce"
+  announce_interval: 3600
+
+directories:
+  - "/home/user/media"
+
+extensions:
+  - "mp3"
+  - "mkv"
+```
+
+### Example 2: External Mode (Development)
+```yaml
+ipfs:
+  mode: "external"
+  
+  external:
+    api_url: "http://localhost:5001"
+    timeout: 300
+    add_options:
+      nocopy: true  # Uses filestore
+      pin: true
+      chunker: "size-262144"
       
 pubsub:
   topic: "mdn/collections/announce"

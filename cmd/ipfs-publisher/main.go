@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/signal"
@@ -14,6 +16,7 @@ import (
 	"github.com/atregu/ipfs-publisher/internal/ipfs"
 	"github.com/atregu/ipfs-publisher/internal/lockfile"
 	"github.com/atregu/ipfs-publisher/internal/logger"
+	"github.com/atregu/ipfs-publisher/internal/pubsub"
 	"github.com/spf13/pflag"
 )
 
@@ -31,6 +34,7 @@ var (
 	ipfsMode    string
 	testUpload  string
 	testIPNS    bool
+	testPubSub  bool
 )
 
 func init() {
@@ -43,6 +47,7 @@ func init() {
 	pflag.StringVar(&ipfsMode, "ipfs-mode", "", "Override IPFS mode from config (external/embedded)")
 	pflag.StringVar(&testUpload, "test-upload", "", "Upload a test file to IPFS and exit")
 	pflag.BoolVar(&testIPNS, "test-ipns", false, "Test IPNS publish and resolve")
+	pflag.BoolVar(&testPubSub, "test-pubsub", false, "Test PubSub announcements")
 }
 
 func main() {
@@ -155,6 +160,14 @@ func main() {
 	if testIPNS {
 		if err := testIPNSOperations(ipfsClient); err != nil {
 			logger.Fatalf("Test IPNS failed: %v", err)
+		}
+		os.Exit(0)
+	}
+
+	// Handle test-pubsub flag
+	if testPubSub {
+		if err := testPubSubOperations(cfg); err != nil {
+			logger.Fatalf("Test PubSub failed: %v", err)
 		}
 		os.Exit(0)
 	}
@@ -489,5 +502,90 @@ func testIPNSOperations(client ipfs.Client) error {
 		logger.Warnf("IPNS resolved to different CID: expected %s in %s", result.CID, resolvedPath)
 	}
 
+	return nil
+}
+
+func testPubSubOperations(cfg *config.Config) error {
+	logger := logger.Get()
+	ctx := context.Background()
+	_ = ctx
+
+	logger.Info("Testing PubSub operations...")
+
+	// Generate test keypair
+	logger.Info("1. Generating Ed25519 keypair...")
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		return fmt.Errorf("failed to generate keypair: %w", err)
+	}
+	logger.Infof("   ✓ Keypair generated (public key: %s...)", base64.StdEncoding.EncodeToString(publicKey)[:32])
+
+	// Create PubSub node
+	logger.Info("2. Creating PubSub node...")
+
+	nodeCfg := &pubsub.Config{
+		Topic:          cfg.Pubsub.Topic,
+		BootstrapPeers: cfg.Pubsub.BootstrapPeers,
+	}
+
+	node, err := pubsub.NewNode(nodeCfg)
+	if err != nil {
+		return fmt.Errorf("failed to create PubSub node: %w", err)
+	}
+
+	if err := node.Start(nodeCfg); err != nil {
+		return fmt.Errorf("failed to start PubSub node: %w", err)
+	}
+	defer node.Stop()
+	logger.Info("   ✓ PubSub node started")
+
+	// Wait for peer discovery
+	logger.Info("3. Waiting for peer discovery...")
+	time.Sleep(5 * time.Second)
+	peerCount := node.GetPeerCount()
+	topicPeerCount := node.GetTopicPeerCount()
+	logger.Infof("   Connected to %d peers (%d on topic)", peerCount, topicPeerCount)
+
+	// Create and publish test message
+	logger.Info("4. Creating test announcement message...")
+	msg := pubsub.NewAnnouncementMessage(
+		1,                                   // version
+		"k51qzi5uqu5dh9ihj8p0dxgzm4jw8m...", // test IPNS
+		10,                                  // collection size
+		time.Now().Unix(),
+	)
+
+	if err := msg.Sign(privateKey); err != nil {
+		return fmt.Errorf("failed to sign message: %w", err)
+	}
+	logger.Info("   ✓ Message created and signed")
+
+	// Verify signature
+	logger.Info("5. Verifying signature...")
+	if err := msg.Verify(); err != nil {
+		return fmt.Errorf("signature verification failed: %w", err)
+	}
+	logger.Infof("   ✓ Signature verified with public key: %s...", base64.StdEncoding.EncodeToString(publicKey)[:32])
+
+	// Publish message
+	logger.Info("6. Publishing message to PubSub...")
+	data, err := msg.ToJSON()
+	if err != nil {
+		return fmt.Errorf("failed to serialize message: %w", err)
+	}
+
+	if err := node.Publish(data); err != nil {
+		return fmt.Errorf("failed to publish message: %w", err)
+	}
+	logger.Infof("   ✓ Message published to topic: %s", cfg.Pubsub.Topic)
+
+	// Display message content
+	logger.Info("7. Message content:")
+	logger.Infof("   Version: %d", msg.Version)
+	logger.Infof("   IPNS: %s", msg.IPNS)
+	logger.Infof("   Collection Size: %d", msg.CollectionSize)
+	logger.Infof("   Timestamp: %d", msg.Timestamp)
+
+	logger.Info("✓ PubSub test successful!")
 	return nil
 }

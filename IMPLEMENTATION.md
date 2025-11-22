@@ -2,7 +2,7 @@
 
 A Go application for automatic publishing of media collections to IPFS with announcement via Pubsub.
 
-## Current Status: Phase 3 Complete ✓
+## Current Status: Phase 4 Complete ✓
 
 ### Implemented Features
 
@@ -35,6 +35,18 @@ A Go application for automatic publishing of media collections to IPFS with anno
 - ✅ Repository persistence between runs
 - ✅ Graceful node shutdown
 
+**Phase 4: PubSub announcements** ✅
+- ✅ PubSub message format with version, IPNS, collection size, timestamp
+- ✅ Ed25519 message signing and verification
+- ✅ Standalone libp2p PubSub node (separate from IPFS node)
+- ✅ GossipSub protocol implementation
+- ✅ DHT integration for peer discovery
+- ✅ Bootstrap peer connection (uses default IPFS bootstrap peers)
+- ✅ Message publishing to configurable topic
+- ✅ Test command with --test-pubsub flag
+- ✅ JSON serialization/deserialization
+- ✅ Message validation with timestamp drift check
+
 ### Project Structure
 
 ```
@@ -50,6 +62,10 @@ ipfs-media-delivery-network/
 │   │   ├── external.go       # External IPFS HTTP API client
 │   │   ├── embedded.go       # Embedded IPFS node implementation (kubo v0.38.2)
 │   │   └── repo.go           # Repository initialization and management
+│   ├── pubsub/
+│   │   ├── message.go        # PubSub message format with signing/verification
+│   │   ├── node.go           # Standalone libp2p PubSub node
+│   │   └── publisher.go      # Message publisher with periodic announcements
 │   ├── logger/
 │   │   └── logger.go         # Logging system
 │   └── lockfile/
@@ -97,6 +113,11 @@ go build -o ipfs-publisher ./cmd/ipfs-publisher
 ### Check IPFS Connection
 ```bash
 ./ipfs-publisher --check-ipfs
+```
+
+### Test PubSub Announcements
+```bash
+./ipfs-publisher --test-pubsub
 ```
 
 ### Upload Test File
@@ -243,13 +264,59 @@ All Phase 3 tests pass:
    # SIGINT handled, repository closed properly
    ```
 
-## Next Steps: Phase 4
+## Phase 4 Test Results (22 Nov 2025)
 
-Phase 4 will implement PubSub announcements:
-- PubSub topic subscription and publishing
-- Collection announcement messages
-- Periodic re-announcements
-- Message format validation
+1. ✅ **PubSub node startup**: Standalone libp2p node created
+   ```bash
+   ./ipfs-publisher --test-pubsub
+   # Peer ID: 12D3KooWQRC9YW6vfEquP89PSnX2ahng5bFXCpqy1t2Uxma1TXfF
+   # Listening on: /ip4/127.0.0.1/tcp/50982, /ip4/192.168.100.2/tcp/50982
+   ```
+
+2. ✅ **Bootstrap peer connection**: Connected to 5 IPFS bootstrap peers
+   ```bash
+   # Connected to 5 bootstrap peers
+   # Total peers after discovery: 39 peers (0 on topic initially)
+   ```
+
+3. ✅ **Keypair generation**: Ed25519 keypair generated successfully
+   ```bash
+   # Public key: MhvWqUm1qu+Cn7tUP+pmciVEy0bkE6TR...
+   ```
+
+4. ✅ **Message creation and signing**: AnnouncementMessage created and signed
+   ```bash
+   # Version: 1
+   # IPNS: k51qzi5uqu5dh9ihj8p0dxgzm4jw8m...
+   # Collection Size: 10
+   # Timestamp: 1763820505
+   # Signature verified
+   ```
+
+5. ✅ **Message publishing**: Successfully published to topic
+   ```bash
+   # Message published to topic: mdn/collections/announce
+   ```
+
+6. ✅ **Peer discovery**: DHT peer discovery working
+   ```bash
+   # Connected to 39 peers after 5 seconds
+   # 0 peers on topic (no other publishers yet)
+   ```
+
+7. ✅ **Signature verification**: Ed25519 signature validation working
+   ```bash
+   # Signature verified with public key
+   ```
+
+## Next Steps: Phase 5
+
+Phase 5 will implement directory monitoring:
+- File system watching with fsnotify
+- Automatic file uploads on detection
+- NDJSON index management
+- State persistence
+- Integration with PubSub for automatic announcements
 
 ## Development
 
@@ -262,7 +329,9 @@ Phase 4 will implement PubSub announcements:
 - `github.com/ipfs/go-ipfs-api` - IPFS HTTP API client (external mode)
 - `github.com/ipfs/kubo` v0.38.2 - IPFS core implementation (embedded mode)
 - `github.com/ipfs/boxo` - IPFS primitives (CID, files, path, etc.)
-- `github.com/libp2p/go-libp2p` - P2P networking
+- `github.com/libp2p/go-libp2p` - P2P networking (PubSub node)
+- `github.com/libp2p/go-libp2p-pubsub` v0.15.0 - GossipSub protocol
+- `github.com/libp2p/go-libp2p-kad-dht` - DHT for peer discovery
 
 ### Technical Notes
 
@@ -287,6 +356,25 @@ Embedded mode requires proper datastore plugin initialization:
 - Persists between runs (same Peer ID)
 - Custom ports avoid conflicts with existing IPFS nodes
 - Port availability checked before startup
+
+#### PubSub Architecture
+PubSub implementation uses a standalone libp2p node (separate from IPFS node):
+- **Dual-node design**: IPFS node for content, PubSub node for announcements
+- **GossipSub protocol**: Efficient topic-based pub/sub with peer scoring
+- **DHT integration**: Uses Kademlia DHT for peer discovery
+- **Bootstrap peers**: Connects to default IPFS bootstrap peers for network entry
+- **Message format**: JSON with version, IPNS, collection size, timestamp, signature
+- **Ed25519 signing**: Messages signed with private key, verified with embedded public key
+- **Timestamp validation**: 1-hour drift check prevents replay attacks
+- **Topic isolation**: Each application instance can use different topics
+
+#### Message Security
+- Ed25519 keypair generation for signing
+- Public key embedded in message for verification
+- Base64-encoded signatures
+- Canonical JSON for consistent signing (sorted keys, no signature field)
+- Timestamp-based freshness validation
+- No encryption (messages are public announcements)
 
 ### Directory Structure
 

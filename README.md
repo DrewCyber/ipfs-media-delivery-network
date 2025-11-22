@@ -4,31 +4,33 @@ A Go application for automatic publishing of media collections to IPFS with anno
 
 ## Features
 
-### Current (Phase 1, 2 & 3 Complete)
+### Current (Phase 1, 2, 3 & 4 Complete)
 
 - ✅ **Configuration Management** - YAML-based configuration with validation
 - ✅ **IPFS Integration** - External IPFS node support via HTTP API
 - ✅ **Embedded IPFS Node** - Built-in IPFS node with custom ports and repository
 - ✅ **File Upload** - Upload files to IPFS with configurable options (pin, raw-leaves)
 - ✅ **IPNS Support** - Publish and resolve IPNS names (works with both modes)
+- ✅ **PubSub Announcements** - Standalone libp2p PubSub node with DHT peer discovery
+- ✅ **Message Signing** - Ed25519 signature support for announcements
 - ✅ **Logging** - Structured logging with file rotation and console output
 - ✅ **Lock File** - Prevents multiple instances from running simultaneously
 - ✅ **CLI Interface** - Comprehensive command-line interface with multiple flags
 
 ### Coming Soon
 
-- 🔄 PubSub announcements
 - 🔄 Directory monitoring and automatic uploads
 - 🔄 NDJSON index management
 - 🔄 State persistence and recovery
+- 🔄 Automatic PubSub announcements on IPNS updates
 
 ## Installation
 
 ### Prerequisites
 
 - Go 1.21 or higher
-- **Optional**: External IPFS node (e.g., IPFS Desktop, kubo daemon) if using `external` mode
-  - Not required for `embedded` mode - the application runs its own IPFS node
+- **For external mode only**: External IPFS node (e.g., IPFS Desktop, kubo daemon)
+  - Default embedded mode requires no external dependencies
 
 ### Build from Source
 
@@ -67,7 +69,20 @@ extensions:
 
 ### 3. Choose IPFS Mode
 
-#### Option A: External Mode (requires running IPFS node)
+#### Option A: Embedded Mode (default, recommended)
+
+```bash
+./ipfs-publisher --check-ipfs
+```
+
+Expected output:
+```
+✓ Embedded IPFS node started successfully. Peer ID: QmXxx...
+✓ Listening on 13 addresses
+✓ Connected to IPFS node
+```
+
+#### Option B: External Mode (for development or existing IPFS Desktop users)
 
 ```bash
 ./ipfs-publisher --ipfs-mode external --check-ipfs
@@ -78,19 +93,6 @@ Expected output:
 ✓ Connected to IPFS node
   Version: 0.38.2
   Node ID: 12D3KooW...
-```
-
-#### Option B: Embedded Mode (standalone)
-
-```bash
-./ipfs-publisher --ipfs-mode embedded --check-ipfs
-```
-
-Expected output:
-```
-✓ Embedded IPFS node started successfully. Peer ID: QmXxx...
-✓ Listening on 13 addresses
-✓ Connected to IPFS node
 ```
 
 ### 4. Test File Upload
@@ -162,6 +164,19 @@ Uploads a single file to IPFS to verify your setup is working correctly.
 
 Tests IPNS publish and resolve functionality by uploading a test file, publishing it to IPNS, and then resolving the IPNS name.
 
+#### Test PubSub Announcements
+
+```bash
+./ipfs-publisher --test-pubsub
+```
+
+Tests PubSub announcement system by:
+- Generating Ed25519 keypair
+- Creating standalone libp2p PubSub node
+- Connecting to DHT bootstrap peers
+- Creating, signing, and verifying announcement message
+- Publishing to configured topic
+
 #### Use Custom Configuration
 
 ```bash
@@ -198,8 +213,15 @@ The application uses a YAML configuration file. Here's a complete example:
 ```yaml
 # IPFS node configuration
 ipfs:
-  # Mode: "external" (use existing IPFS node) or "embedded" (run IPFS inside app)
-  mode: "external"
+  # Mode: "embedded" (run IPFS inside app) or "external" (use existing IPFS node)
+  mode: "embedded"  # default
+  
+  # Embedded node settings (used when mode: embedded)
+  embedded:
+    repo_path: "~/.ipfs_publisher/ipfs-repo"  # Where to store IPFS data
+    swarm_port: 4002      # P2P swarm port (default: 4002)
+    api_port: 5002        # API port (default: 5002)
+    gateway_port: 8081    # Gateway port (default: 8081)
   
   # External node settings (used when mode: external)
   external:
@@ -211,17 +233,11 @@ ipfs:
       chunker: "size-262144"  # Chunking strategy
       raw_leaves: true   # Use raw leaves for UnixFS
 
-  # Embedded node settings (used when mode: embedded)
-  embedded:
-    repo_path: "~/.ipfs_publisher/ipfs-repo"  # Where to store IPFS data
-    swarm_port: 4002      # P2P swarm port (default: 4002)
-    api_port: 5002        # API port (default: 5002)
-    gateway_port: 8081    # Gateway port (default: 8081)
-
-# PubSub configuration - Coming soon
+# PubSub configuration
 pubsub:
   topic: "mdn/collections/announce"
   announce_interval: 3600  # seconds
+  bootstrap_peers: []  # Optional: custom bootstrap peers (uses IPFS defaults if empty)
 
 # Directories to monitor
 directories:
@@ -257,18 +273,19 @@ behavior:
 
 #### IPFS Mode
 
+- **embedded** (default): Runs a full IPFS node inside the application
+  - No external IPFS node required - fully standalone
+  - Creates its own repository at the configured path
+  - Uses custom ports to avoid conflicts with existing IPFS nodes
+  - Higher memory footprint but zero external dependencies
+  - Recommended for production deployments and most users
+  - Good for isolated environments and automatic deployments
+
 - **external**: Connects to an existing IPFS node (e.g., IPFS Desktop, kubo daemon)
   - Requires a running IPFS node on the configured API port (default: 5001)
   - Uses HTTP API to interact with the node
   - Lower memory footprint as IPFS runs in a separate process
   - Good for development or when IPFS Desktop is already running
-
-- **embedded**: Runs a full IPFS node inside the application
-  - No external IPFS node required - fully standalone
-  - Creates its own repository at the configured path
-  - Uses custom ports to avoid conflicts with existing IPFS nodes
-  - Higher memory footprint but zero external dependencies
-  - Good for production deployments or isolated environments
 
 #### Add Options
 
