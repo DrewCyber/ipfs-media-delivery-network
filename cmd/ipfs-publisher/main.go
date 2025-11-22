@@ -13,10 +13,14 @@ import (
 	"time"
 
 	"github.com/atregu/ipfs-publisher/internal/config"
+	"github.com/atregu/ipfs-publisher/internal/index"
 	"github.com/atregu/ipfs-publisher/internal/ipfs"
 	"github.com/atregu/ipfs-publisher/internal/lockfile"
 	"github.com/atregu/ipfs-publisher/internal/logger"
 	"github.com/atregu/ipfs-publisher/internal/pubsub"
+	"github.com/atregu/ipfs-publisher/internal/scanner"
+	"github.com/atregu/ipfs-publisher/internal/state"
+	progressbar "github.com/schollz/progressbar/v3"
 	"github.com/spf13/pflag"
 )
 
@@ -174,13 +178,19 @@ func main() {
 
 	// Handle dry-run flag
 	if dryRun {
-		logger.Info("Running in dry-run mode...")
-		// TODO: Implement dry-run logic
-		logger.Info("Dry-run not yet implemented")
+		if err := runScan(cfg, nil, true); err != nil {
+			logger.Fatalf("Scan failed: %v", err)
+		}
 		os.Exit(0)
 	}
 
 	// Main application logic
+	logger.Info("Starting main application...")
+	if err := runScan(cfg, ipfsClient, false); err != nil {
+		logger.Fatalf("Failed to process files: %v", err)
+	}
+
+	logger.Info("Processing complete!")
 	logger.Info("Application started successfully")
 	logger.Debugf("Monitoring directories: %v", cfg.Directories)
 	logger.Debugf("File extensions: %v", cfg.Extensions)
@@ -587,5 +597,196 @@ func testPubSubOperations(cfg *config.Config) error {
 	logger.Infof("   Timestamp: %d", msg.Timestamp)
 
 	logger.Info("✓ PubSub test successful!")
+	return nil
+}
+
+func runScan(cfg *config.Config, ipfsClient ipfs.Client, dryRun bool) error {
+	logger := logger.Get()
+	ctx := context.Background()
+
+	// Initialize scanner
+	scan := scanner.New(cfg.Directories, cfg.Extensions)
+	logger.Infof("Scanning directories: %v", cfg.Directories)
+	logger.Infof("Looking for extensions: %v", cfg.Extensions)
+
+	// Scan for files
+	files, err := scan.Scan()
+	if err != nil {
+		return fmt.Errorf("scan failed: %w", err)
+	}
+
+	if len(files) == 0 {
+		logger.Warn("No files found matching criteria")
+		return nil
+	}
+
+	logger.Infof("Found %d files", len(files))
+
+	if dryRun {
+		logger.Info("Dry-run mode: listing files without uploading")
+		for i, file := range files {
+			logger.Infof("[%d] %s (%d bytes)", i+1, file.Path, file.Size)
+		}
+		return nil
+	}
+
+	// Initialize state manager
+	stateManager := state.New(filepath.Join(getBaseDir(), "state.json"))
+	if err := stateManager.Load(); err != nil {
+		return fmt.Errorf("failed to load state: %w", err)
+	}
+
+	// Initialize index manager
+	indexPath := filepath.Join(getBaseDir(), "collection.ndjson")
+	indexMgr := index.New(indexPath)
+	if err := indexMgr.Load(); err != nil {
+		return fmt.Errorf("failed to load index: %w", err)
+	}
+
+	// Create progress bar
+	var bar *progressbar.ProgressBar
+	if len(files) > 10 {
+		bar = progressbar.NewOptions(len(files),
+			progressbar.OptionSetDescription("Uploading files"),
+			progressbar.OptionSetWriter(os.Stderr),
+			progressbar.OptionShowCount(),
+			progressbar.OptionSetPredictTime(true),
+			progressbar.OptionFullWidth(),
+			progressbar.OptionSetRenderBlankState(true),
+		)
+	}
+
+	// Process files
+	processedCount := 0
+	skippedCount := 0
+	errorCount := 0
+
+	for _, file := range files {
+		// Check if file needs processing
+		fileState, exists := stateManager.GetFile(file.Path)
+		if exists && fileState.ModTime == file.ModTime && fileState.Size == file.Size {
+			// File unchanged, skip
+			skippedCount++
+			if bar != nil {
+				bar.Add(1)
+			}
+			continue
+		}
+
+		// Upload file to IPFS
+		logger.Infof("Uploading: %s", file.Name)
+
+		// Open file
+		f, err := os.Open(file.Path)
+		if err != nil {
+			logger.Errorf("Failed to open %s: %v", file.Path, err)
+			errorCount++
+			if bar != nil {
+				bar.Add(1)
+			}
+			continue
+		}
+
+		// Determine add options based on mode
+		addOpts := ipfs.AddOptions{
+			Pin:       true,
+			RawLeaves: true,
+		}
+
+		if cfg.IPFS.Mode == config.IPFSModeExternal {
+			if pin, ok := cfg.IPFS.External.Options["pin"].(bool); ok {
+				addOpts.Pin = pin
+			}
+			if rawLeaves, ok := cfg.IPFS.External.Options["raw_leaves"].(bool); ok {
+				addOpts.RawLeaves = rawLeaves
+			}
+			if chunker, ok := cfg.IPFS.External.Options["chunker"].(string); ok {
+				addOpts.Chunker = chunker
+			}
+		} else {
+			if pin, ok := cfg.IPFS.Embedded.Options["pin"].(bool); ok {
+				addOpts.Pin = pin
+			}
+			if rawLeaves, ok := cfg.IPFS.Embedded.Options["raw_leaves"].(bool); ok {
+				addOpts.RawLeaves = rawLeaves
+			}
+			if chunker, ok := cfg.IPFS.Embedded.Options["chunker"].(string); ok {
+				addOpts.Chunker = chunker
+			}
+		}
+
+		result, err := ipfsClient.Add(ctx, f, file.Name, addOpts)
+		f.Close()
+
+		if err != nil {
+			logger.Errorf("Failed to upload %s: %v", file.Path, err)
+			errorCount++
+			if bar != nil {
+				bar.Add(1)
+			}
+			continue
+		}
+
+		logger.Infof("   ✓ CID: %s", result.CID)
+
+		// Update index
+		if exists {
+			indexMgr.Update(file.Name, result.CID)
+		} else {
+			record := indexMgr.Add(file.Name, result.CID, file.Extension)
+			// Update state with index ID
+			stateManager.SetFile(file.Path, &state.FileState{
+				CID:     result.CID,
+				ModTime: file.ModTime,
+				Size:    file.Size,
+				IndexID: record.ID,
+			})
+		}
+
+		processedCount++
+		if bar != nil {
+			bar.Add(1)
+		}
+	}
+
+	if bar != nil {
+		bar.Finish()
+	}
+
+	logger.Infof("Processing complete: %d uploaded, %d skipped, %d errors", processedCount, skippedCount, errorCount)
+
+	// Save index
+	if processedCount > 0 {
+		if err := indexMgr.Save(); err != nil {
+			return fmt.Errorf("failed to save index: %w", err)
+		}
+		logger.Info("Index saved")
+
+		// Upload index to IPFS
+		indexFile, err := os.Open(indexMgr.GetPath())
+		if err != nil {
+			return fmt.Errorf("failed to open index file: %w", err)
+		}
+
+		indexResult, err := ipfsClient.Add(ctx, indexFile, "collection.ndjson", ipfs.AddOptions{
+			Pin: true,
+		})
+		indexFile.Close()
+
+		if err != nil {
+			return fmt.Errorf("failed to upload index: %w", err)
+		}
+
+		logger.Infof("Index uploaded to IPFS: %s", indexResult.CID)
+		stateManager.SetLastIndexCID(indexResult.CID)
+		stateManager.IncrementVersion()
+
+		// Save state
+		if err := stateManager.Save(); err != nil {
+			return fmt.Errorf("failed to save state: %w", err)
+		}
+		logger.Info("State saved")
+	}
+
 	return nil
 }

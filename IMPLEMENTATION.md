@@ -2,7 +2,7 @@
 
 A Go application for automatic publishing of media collections to IPFS with announcement via Pubsub.
 
-## Current Status: Phase 4 Complete ✓
+## Current Status: Phase 5 Complete ✓
 
 ### Implemented Features
 
@@ -47,6 +47,20 @@ A Go application for automatic publishing of media collections to IPFS with anno
 - ✅ JSON serialization/deserialization
 - ✅ Message validation with timestamp drift check
 
+**Phase 5: Directory scanning and index creation** ✅
+- ✅ Recursive directory scanner with extension filtering
+- ✅ Hidden file and temporary file filtering
+- ✅ NDJSON index format implementation
+- ✅ Index manager with Add/Update/Get operations
+- ✅ State manager with JSON persistence
+- ✅ File state tracking (CID, mtime, size, indexID)
+- ✅ Incremental uploads (skip unchanged files)
+- ✅ Progress bar for batch operations (>10 files)
+- ✅ --dry-run flag for testing without uploads
+- ✅ Index upload to IPFS
+- ✅ Version management in state
+- ✅ Thread-safe state operations
+
 ### Project Structure
 
 ```
@@ -66,6 +80,12 @@ ipfs-media-delivery-network/
 │   │   ├── message.go        # PubSub message format with signing/verification
 │   │   ├── node.go           # Standalone libp2p PubSub node
 │   │   └── publisher.go      # Message publisher with periodic announcements
+│   ├── scanner/
+│   │   └── scanner.go        # Directory scanner with extension filtering
+│   ├── index/
+│   │   └── manager.go        # NDJSON index manager
+│   ├── state/
+│   │   └── manager.go        # State persistence and recovery
 │   ├── logger/
 │   │   └── logger.go         # Logging system
 │   └── lockfile/
@@ -118,6 +138,15 @@ go build -o ipfs-publisher ./cmd/ipfs-publisher
 ### Test PubSub Announcements
 ```bash
 ./ipfs-publisher --test-pubsub
+```
+
+### Scan and Upload Media Collection
+```bash
+# Dry run - scan without uploading
+./ipfs-publisher --dry-run
+
+# Upload all files
+./ipfs-publisher
 ```
 
 ### Upload Test File
@@ -309,14 +338,87 @@ All Phase 3 tests pass:
    # Signature verified with public key
    ```
 
-## Next Steps: Phase 5
+## Phase 5 Test Results (22 Nov 2025)
 
-Phase 5 will implement directory monitoring:
-- File system watching with fsnotify
-- Automatic file uploads on detection
-- NDJSON index management
-- State persistence
-- Integration with PubSub for automatic announcements
+1. ✅ **Directory scanning**: Found 4 files matching criteria
+   ```bash
+   ./ipfs-publisher --dry-run
+   # Found 4 files matching criteria
+   # [1] /Users/atregu/test-media/song1.mp3 (15 bytes)
+   # [2] /Users/atregu/test-media/song2.mp3 (15 bytes)
+   # [3] /Users/atregu/test-media/test.mp3 (5 bytes)
+   # [4] /Users/atregu/test-media/video.mkv (11 bytes)
+   ```
+
+2. ✅ **File upload to IPFS**: All files uploaded successfully
+   ```bash
+   ./ipfs-publisher
+   # Uploading: song1.mp3
+   #    ✓ CID: bafkreicd7xur6y2c7z3vmmprlo5l2cu34azkjfg7myb2sv4polwivxroze
+   # Uploading: song2.mp3
+   #    ✓ CID: bafkreignvobfvo6srdpdccgidabj7vnoq5m6otjwgvd7mpxsy3ykxhafyq
+   # ... (4 files total)
+   ```
+
+3. ✅ **NDJSON index creation**: Index file created correctly
+   ```bash
+   cat ~/.ipfs_publisher/collection.ndjson
+   # {"id":1,"CID":"bafkrei...","filename":"song1.mp3","extension":"mp3"}
+   # {"id":2,"CID":"bafkrei...","filename":"song2.mp3","extension":"mp3"}
+   # {"id":3,"CID":"bafkrei...","filename":"test.mp3","extension":"mp3"}
+   # {"id":4,"CID":"bafkrei...","filename":"video.mkv","extension":"mkv"}
+   ```
+
+4. ✅ **Index uploaded to IPFS**: Index CID saved in state
+   ```bash
+   # Index uploaded to IPFS: QmYfa7ERXZH1R3N63GSBVYv1fpMSxZ9J7izgiJE4S6z4pb
+   ```
+
+5. ✅ **State persistence**: State saved with version tracking
+   ```json
+   {
+     "version": 1,
+     "ipns": "",
+     "lastIndexCID": "QmYfa7ERXZH1R3N63GSBVYv1fpMSxZ9J7izgiJE4S6z4pb",
+     "files": {
+       "/Users/atregu/test-media/song1.mp3": {
+         "cid": "bafkrei...",
+         "mtime": 1763821114,
+         "size": 15,
+         "indexId": 1
+       }
+     }
+   }
+   ```
+
+6. ✅ **Incremental updates**: Second run skipped unchanged files
+   ```bash
+   ./ipfs-publisher
+   # Loaded state: version=1, files=4
+   # Loaded 4 records from index (next ID: 5)
+   # Processing complete: 0 uploaded, 4 skipped, 0 errors
+   ```
+
+7. ✅ **Extension filtering**: Only configured extensions processed
+   ```bash
+   # Files with .txt, .jpg, etc. ignored
+   # Only .mp3, .mkv, .mp4, .flac, .wav, .avi processed
+   ```
+
+8. ✅ **Hidden file filtering**: Hidden files automatically skipped
+   ```bash
+   # Files starting with . are ignored
+   # Temporary files with ~ are ignored
+   ```
+
+## Next Steps: Phase 6
+
+Phase 6 will implement IPNS and key management:
+- Ed25519 key pair generation
+- Key storage with proper permissions (0600)
+- IPNS record creation and publishing
+- IPNS updates on index changes
+- Integration with existing state management
 
 ## Development
 
@@ -332,6 +434,7 @@ Phase 5 will implement directory monitoring:
 - `github.com/libp2p/go-libp2p` - P2P networking (PubSub node)
 - `github.com/libp2p/go-libp2p-pubsub` v0.15.0 - GossipSub protocol
 - `github.com/libp2p/go-libp2p-kad-dht` - DHT for peer discovery
+- `github.com/schollz/progressbar/v3` v3.18.0 - Progress bar for uploads
 
 ### Technical Notes
 
@@ -375,6 +478,31 @@ PubSub implementation uses a standalone libp2p node (separate from IPFS node):
 - Canonical JSON for consistent signing (sorted keys, no signature field)
 - Timestamp-based freshness validation
 - No encryption (messages are public announcements)
+
+#### Scanner Architecture
+- **Extension filtering**: Case-insensitive map lookup for O(1) performance
+- **Hidden file detection**: Files starting with `.` automatically skipped
+- **Temporary file detection**: Files with `~` prefix/suffix skipped
+- **Recursive traversal**: Uses `filepath.Walk` for directory tree scanning
+- **Path expansion**: Tilde (`~`) expanded to home directory
+- **Error handling**: Continues scanning on individual file errors
+
+#### Index Format (NDJSON)
+- **One JSON object per line**: Enables streaming and append operations
+- **Sequential IDs**: Start at 1, increment on new files
+- **ID preservation**: IDs never change, even when files deleted
+- **Atomic writes**: Use temp file + rename for crash safety
+- **Fields**: id (int), CID (string), filename (string), extension (string)
+- **No modification time in index**: Stored separately in state.json
+
+#### State Management
+- **JSON format**: Human-readable and easy to debug
+- **File tracking**: Maps absolute path to FileState (cid, mtime, size, indexId)
+- **Version counter**: Increments on each collection change
+- **Thread-safe**: Mutex protection for concurrent access
+- **Change detection**: Compare mtime and size to detect modifications
+- **Atomic writes**: Temp file + rename pattern
+- **Recovery**: Load on startup, continue from last state
 
 ### Directory Structure
 

@@ -4,7 +4,7 @@ A Go application for automatic publishing of media collections to IPFS with anno
 
 ## Features
 
-### Current (Phase 1, 2, 3 & 4 Complete)
+### Current (Phase 1-5 Complete)
 
 - ✅ **Configuration Management** - YAML-based configuration with validation
 - ✅ **IPFS Integration** - External IPFS node support via HTTP API
@@ -13,16 +13,20 @@ A Go application for automatic publishing of media collections to IPFS with anno
 - ✅ **IPNS Support** - Publish and resolve IPNS names (works with both modes)
 - ✅ **PubSub Announcements** - Standalone libp2p PubSub node with DHT peer discovery
 - ✅ **Message Signing** - Ed25519 signature support for announcements
+- ✅ **Directory Scanning** - Recursive scanning with extension filtering
+- ✅ **NDJSON Index** - Media collection index with sequential IDs
+- ✅ **State Management** - Persistent state with change detection
+- ✅ **Progress Bar** - Visual feedback for batch uploads
 - ✅ **Logging** - Structured logging with file rotation and console output
 - ✅ **Lock File** - Prevents multiple instances from running simultaneously
 - ✅ **CLI Interface** - Comprehensive command-line interface with multiple flags
 
 ### Coming Soon
 
-- 🔄 Directory monitoring and automatic uploads
-- 🔄 NDJSON index management
-- 🔄 State persistence and recovery
+- 🔄 IPNS key management and publishing
+- 🔄 Real-time directory monitoring with fsnotify
 - 🔄 Automatic PubSub announcements on IPNS updates
+- 🔄 File change detection and incremental updates
 
 ## Installation
 
@@ -176,6 +180,18 @@ Tests PubSub announcement system by:
 - Connecting to DHT bootstrap peers
 - Creating, signing, and verifying announcement message
 - Publishing to configured topic
+
+#### Scan and Upload Media Collection
+
+```bash
+# Dry run - scan without uploading
+./ipfs-publisher --dry-run
+
+# Upload all files to IPFS and create index
+./ipfs-publisher
+```
+
+Scans configured directories, uploads files to IPFS, creates NDJSON index, and saves state. On subsequent runs, skips unchanged files.
 
 #### Use Custom Configuration
 
