@@ -38,19 +38,78 @@ Go application for automatic publishing of media collections to IPFS with announ
 
 ### 2.2 IPFS Integration
 
-#### 2.2.1 Connecting to IPFS
+#### 2.2.1 IPFS Node Modes
+
+The application supports two modes of IPFS node operation:
+
+**External Mode (default):**
+- Connect to an existing IPFS node (e.g., IPFS Desktop, kubo daemon)
+- Use HTTP API for file operations (add, pin, get)
+- Recommended for users who already run IPFS node
+
+**Embedded Mode:**
+- Launch a full-featured IPFS node inside the application
+- Complete IPFS functionality including DHT, bitswap, and content routing
+- Used when user doesn't have external IPFS node or prefers isolation
+
+**PubSub Provider:**
+- **Always uses embedded implementation** regardless of IPFS mode
+- Reason: IPFS Desktop removed PubSub endpoint from HTTP API
+- Embedded PubSub runs even in external IPFS mode
+
+**Mode Selection:**
+- Hardcoded in configuration file
+- User explicitly chooses mode
+- No automatic fallback between modes
+
+#### 2.2.2 Connecting to External IPFS
 - Connect to an IPFS node through the HTTP API
-- Connection parameters come from config (URL, port)
+- Connection parameters from config (URL, port)
 - If the node is unavailable:
   - Log an ERROR
   - Retry connection every 30 seconds
   - Application does not exit, waits for node availability
 
-#### 2.2.2 Uploading files to IPFS
+#### 2.2.3 Embedded IPFS Node
+
+**Initialization:**
+- On first run initialize IPFS repository at `~/.ipfs_publisher/ipfs-repo`
+- Generate peer identity (keypair)
+- Use standard IPFS bootstrap nodes for DHT connectivity
+- Repository persists between runs
+
+**Configuration:**
+- Custom ports to avoid conflicts with external nodes
+- Configurable swarm, API, and gateway ports
+- Default ports different from standard IPFS (4001, 5001, 8080)
+
+**Startup Checks:**
+- Before starting, check if configured ports are available
+- If any port is occupied:
+  - Log ERROR: "Port {port} is already in use. Please check if another IPFS node is running or change ports in config."
+  - Exit application with non-zero status code
+  - Suggest checking `ipfs id` or `lsof -i :{port}`
+
+**Lifecycle:**
+- Start embedded node on application startup
+- Graceful shutdown when application stops
+- Wait for pending operations before shutdown
+
+**Features:**
+- Full IPFS node capabilities
+- DHT participation for content routing
+- Bitswap for content exchange
+- Content pinning and storage
+- Garbage collection (optional, configurable)
+
+#### 2.2.4 Uploading files to IPFS
 - Upload files sequentially (one at a time)
+- Use active IPFS node (external or embedded)
 - Support IPFS add options:
-  - `--nocopy` (optional, from config)
+  - `--nocopy` (optional, from config, only for external mode with filestore)
   - `--pin` (optional, from config)
+  - `--chunker` (optional, from config)
+  - `--raw-leaves` (optional, from config)
   - Other options via config
 - Obtain CID for each uploaded file
 - Log the process:
@@ -58,12 +117,13 @@ Go application for automatic publishing of media collections to IPFS with announ
   - INFO: successful upload with CID
   - ERROR: upload error with details
 
-#### 2.2.3 Progress Tracking
+#### 2.2.5 Progress Tracking
 - Show a progress bar when processing a large number of files (>10)
 - Progress bar info:
   - Current file being processed
   - Processed/total count
   - Percent complete
+  - Current IPFS mode indicator
 - Detailed logs are written to a log file in parallel with the progress bar
 
 ### 2.3 Collection Index Management
@@ -98,6 +158,7 @@ Go application for automatic publishing of media collections to IPFS with announ
 
 #### 2.3.3 Uploading the index to IPFS
 - After updating the NDJSON, upload the index file to IPFS
+- Use active IPFS node (external or embedded)
 - Obtain the CID for the index file
 - Pin the index file (if enabled in config)
 
@@ -114,6 +175,7 @@ Go application for automatic publishing of media collections to IPFS with announ
 #### 2.4.2 Creating and updating IPNS
 - On the first publish create an IPNS record
 - The IPNS record points to the current CID of the index file
+- Use active IPFS node (external or embedded) for IPNS operations
 - On index updates:
   - Update the IPNS record to the new CID
   - The IPNS hash remains the same
@@ -122,7 +184,19 @@ Go application for automatic publishing of media collections to IPFS with announ
 
 ### 2.5 Pubsub Announcement
 
-#### 2.5.1 Message format
+#### 2.5.1 PubSub Provider
+- **Always uses embedded libp2p PubSub implementation**
+- Independent of IPFS node mode (external/embedded)
+- Reasons:
+  - IPFS Desktop removed PubSub endpoint from HTTP API
+  - Ensures consistent PubSub functionality across all configurations
+- Embedded PubSub node:
+  - Lightweight libp2p node
+  - Only PubSub protocol enabled
+  - Separate from IPFS storage node
+  - Uses standard libp2p bootstrap for peer discovery
+
+#### 2.5.2 Message format
 ```json
 {
   "version": 3,
@@ -142,14 +216,15 @@ Go application for automatic publishing of media collections to IPFS with announ
 - `timestamp` (int): Unix timestamp in seconds
 - `signature` (string): Base64-encoded signature of the message
 
-#### 2.5.2 Signing messages
+#### 2.5.3 Signing messages
 - The signature is created over the JSON object without the `signature` field
 - Algorithm: Ed25519
 - Signature is Base64 encoded
 - Receivers can verify the signature using `publicKey`
 
-#### 2.5.3 Publishing to Pubsub
+#### 2.5.4 Publishing to Pubsub
 - Topic: configurable in config (default `mdn/collections/announce`)
+- Published via embedded PubSub node
 - Publish occurs:
   - On the first upload of all files
   - After each collection update
@@ -159,7 +234,7 @@ Go application for automatic publishing of media collections to IPFS with announ
   - Wait for the next attempt (after an hour or on next change)
   - Application continues running
 
-#### 2.5.4 Periodic announcements
+#### 2.5.5 Periodic announcements
 - Timer: every 60 minutes
 - Publish the current state of the collection
 - `version` is not incremented if the collection did not change
@@ -209,25 +284,33 @@ State file: `~/.ipfs_publisher/state.json`
 
 ### 2.7 Error Handling
 
-#### 2.7.1 IPFS unavailable
+#### 2.7.1 IPFS unavailable (External mode)
 - Wait with periodic retry attempts (30s)
 - File processing queue accumulates
 - Process queue after connection is restored
 
-#### 2.7.2 File deleted during processing
+#### 2.7.2 Embedded IPFS startup failure
+- If embedded node fails to start:
+  - Log detailed error (port conflict, repo corruption, etc.)
+  - For port conflicts: suggest port configuration
+  - For repo issues: suggest repo cleanup or migration
+  - Exit application with error code
+
+#### 2.7.3 File deleted during processing
 - Catch "file not found" errors when reading/uploading
 - Remove file from processing queue
 - Remove record from NDJSON if it existed
 - Update index and publish changes
 
-#### 2.7.3 Insufficient disk space
+#### 2.7.4 Insufficient disk space
 - Check available disk space before processing large files
+- For embedded mode: monitor repo size
 - If insufficient:
   - Log ERROR with warning
   - Skip the file
   - Continue with other files
 
-#### 2.7.4 Incorrect permissions
+#### 2.7.5 Incorrect permissions
 - Catch "permission denied" errors
 - Log with the problematic file
 - Skip the file and continue
@@ -239,15 +322,53 @@ Format: YAML
 Default path: `./config.yaml` or `~/.ipfs_publisher/config.yaml`
 
 ```yaml
-# IPFS connection settings
+# IPFS node configuration
 ipfs:
-  api_url: "http://localhost:5001"
-  timeout: 300  # seconds
-  add_options:
-    nocopy: false
-    pin: true
-    chunker: "size-262144"
-    raw_leaves: true
+  # Mode: "external" (use existing IPFS node) or "embedded" (run IPFS inside app)
+  mode: "external"  # default
+  
+  # External node settings (used when mode: external)
+  external:
+    api_url: "http://localhost:5001"
+    timeout: 300  # seconds
+    add_options:
+      nocopy: false  # only works with filestore enabled on external node
+      pin: true
+      chunker: "size-262144"
+      raw_leaves: true
+  
+  # Embedded node settings (used when mode: embedded)
+  embedded:
+    repo_path: "~/.ipfs_publisher/ipfs-repo"
+    
+    # Network ports (must be different from external IPFS node if both run)
+    swarm_port: 4002      # libp2p swarm (default IPFS: 4001)
+    api_port: 5002        # HTTP API (default IPFS: 5001)
+    gateway_port: 8081    # HTTP gateway (default IPFS: 8080)
+    
+    # Storage settings
+    add_options:
+      pin: true
+      chunker: "size-262144"
+      raw_leaves: true
+    
+    # Bootstrap peers (leave empty to use standard IPFS bootstrap nodes)
+    bootstrap_peers: []
+    
+    # Garbage collection
+    gc:
+      enabled: true
+      interval: 86400  # seconds (24 hours)
+      min_free_space: 1073741824  # bytes (1GB)
+
+# PubSub configuration (always uses embedded implementation)
+pubsub:
+  topic: "mdn/collections/announce"
+  announce_interval: 3600  # seconds (1 hour)
+  
+  # Embedded PubSub node settings
+  bootstrap_peers: []  # leave empty for standard libp2p bootstrap
+  listen_port: 0       # 0 = random port
 
 # Directories to monitor
 directories:
@@ -263,11 +384,6 @@ extensions:
   - "avi"
   - "flac"
   - "wav"
-
-# Pubsub settings
-pubsub:
-  topic: "mdn/collections/announce"
-  announce_interval: 3600  # seconds (1 hour)
 
 # Logging
 logging:
@@ -296,6 +412,7 @@ Flags:
   --init                 Initialize configuration and generate keys
   --check-ipfs           Check IPFS connection and exit
   --dry-run              Scan and show what would be processed without uploading
+  --ipfs-mode string     Override IPFS mode from config (external/embedded)
 ```
 
 ## 4. Technical Architecture
@@ -303,8 +420,9 @@ Flags:
 ### 4.1 Technology Stack
 - **Language**: Go 1.21+
 - **IPFS Integration**: 
-  - `github.com/ipfs/go-ipfs-api` (HTTP API client)
-  - or `github.com/ipfs/kubo` (for optional embedded node)
+  - External mode: `github.com/ipfs/go-ipfs-api` (HTTP API client)
+  - Embedded mode: `github.com/ipfs/kubo` (full IPFS node)
+- **PubSub**: `github.com/libp2p/go-libp2p-pubsub` (always embedded)
 - **File System Monitoring**: `github.com/fsnotify/fsnotify`
 - **Logging**: `github.com/sirupsen/logrus` or `go.uber.org/zap`
 - **Configuration**: `github.com/spf13/viper`
@@ -315,23 +433,54 @@ Flags:
 
 #### 4.2.1 Main Components
 1. **FileWatcher**: Filesystem monitoring
-2. **IPFSClient**: Interaction with IPFS API
-3. **IndexManager**: NDJSON index management
-4. **IPNSManager**: Create and update IPNS records
-5. **PubsubPublisher**: Publish announcements to Pubsub
-6. **StateManager**: Save and restore state
-7. **KeyManager**: Key generation and management
+2. **IPFSClient**: Interaction with IPFS (external or embedded)
+3. **EmbeddedIPFS**: Embedded IPFS node lifecycle management
+4. **PubsubNode**: Embedded libp2p PubSub node (always used)
+5. **IndexManager**: NDJSON index management
+6. **IPNSManager**: Create and update IPNS records
+7. **PubsubPublisher**: Publish announcements to Pubsub
+8. **StateManager**: Save and restore state
+9. **KeyManager**: Key generation and management
 
 #### 4.2.2 Data Flow
 ```
-FileWatcher → IPFSClient → IndexManager → IPNSManager → PubsubPublisher
-                ↓                                            ↓
-           StateManager ←─────────────────────────────────────┘
+FileWatcher → IPFSClient → IndexManager → IPNSManager
+                ↓              ↓             ↓
+         StateManager    PubsubNode ← PubsubPublisher
+                              ↓
+                      (Always Embedded)
+```
+
+#### 4.2.3 IPFS Mode Architecture
+
+**External Mode:**
+```
+Application
+├── HTTP API Client → External IPFS Node
+│   ├── Add files
+│   ├── Pin content
+│   └── IPNS publish
+└── Embedded PubSub Node (separate)
+    └── Announce messages
+```
+
+**Embedded Mode:**
+```
+Application
+├── Embedded IPFS Node (full)
+│   ├── Add files
+│   ├── Pin content
+│   ├── IPNS publish
+│   ├── DHT routing
+│   └── Bitswap
+└── Embedded PubSub Node (separate)
+    └── Announce messages
 ```
 
 ### 4.3 Concurrency Model
 - Main goroutine for FileWatcher
 - Separate goroutine for periodic Pubsub announcements
+- Separate goroutine for embedded IPFS node (if used)
 - Worker pool (optional) for parallel uploads to IPFS
 - Channels for coordination between components
 - Mutex to protect shared state
@@ -348,6 +497,12 @@ FileWatcher → IPFSClient → IndexManager → IPNSManager → PubsubPublisher
 - Streaming upload for large files (>100MB)
 - Limit buffer size when reading the index
 - Periodic cache eviction for state
+- Monitor embedded IPFS repo size
+
+#### 4.4.3 Embedded Mode Considerations
+- Repository cleanup with garbage collection
+- Configurable storage limits
+- Monitor peer connections and DHT performance
 
 ## 5. Security Considerations
 
@@ -363,16 +518,21 @@ FileWatcher → IPFSClient → IndexManager → IPNSManager → PubsubPublisher
 - Sanitize filenames in the index
 
 ### 5.3 IPFS Security
-- Optional authentication to the IPFS API
+- Optional authentication to the IPFS API (external mode)
 - Verify TLS certificates when using HTTPS
 - Rate limiting to protect from DoS
+
+### 5.4 Embedded Node Security
+- Isolated network namespace (optional)
+- Firewall rules for swarm port
+- Peer filtering (optional)
 
 ## 6. Monitoring and Observability
 
 ### 6.1 Logging Levels
 - **DEBUG**: Detailed info about every operation
-- **INFO**: Major events (file processed, index updated)
-- **WARN**: Potential problems (processing slowdowns)
+- **INFO**: Major events (file processed, index updated, node started)
+- **WARN**: Potential problems (processing slowdowns, port conflicts)
 - **ERROR**: Errors that do not stop the application
 
 ### 6.2 Metrics (optional)
@@ -381,9 +541,13 @@ FileWatcher → IPFSClient → IndexManager → IPNSManager → PubsubPublisher
 - Time to process files
 - Number of errors by type
 - IPFS node availability
+- Embedded node stats (peers, bandwidth)
+- PubSub message delivery rate
 
 ### 6.3 Health Checks
-- Check IPFS connectivity
+- Check IPFS connectivity (mode-aware)
+- Check embedded node health (if applicable)
+- Check PubSub node connectivity
 - Check directory availability
 - Check integrity of the state file
 - Optional status endpoint
@@ -394,16 +558,21 @@ FileWatcher → IPFSClient → IndexManager → IPNSManager → PubsubPublisher
 - Tests for each component in isolation
 - Mock IPFS API for testing IPFSClient
 - Tests for correct signing/verification
+- Tests for embedded node lifecycle
 
 ### 7.2 Integration Tests
-- Tests with a real IPFS node (testnet)
+- Tests with external IPFS node
+- Tests with embedded IPFS node
+- Tests for PubSub message delivery
 - Tests for file change scenarios
 - Tests for recovery after failures
+- Tests for mode switching
 
 ### 7.3 Performance Tests
 - Tests with large collections (10000+ files)
 - Tests with large files (>1GB)
 - Memory leak tests for long-running operation
+- Embedded node resource usage tests
 
 ## 8. Future Enhancements
 
@@ -414,12 +583,14 @@ FileWatcher → IPFSClient → IndexManager → IPNSManager → PubsubPublisher
 - Automatic cleaning of old versions in IPFS
 - File metadata (tags, descriptions)
 - Playlists and albums support
+- Hybrid mode (external for storage, embedded for PubSub)
 
 ### 8.2 Optimization Opportunities
 - Parallel file uploads to IPFS
 - Deduplication by content hash
 - Compression for the index file
 - Incremental IPNS updates
+- Advanced peer routing strategies
 
 ## 9. Edge Cases and Limitations
 
@@ -428,6 +599,7 @@ FileWatcher → IPFSClient → IndexManager → IPNSManager → PubsubPublisher
 - Remote file versioning not supported
 - No automatic rotation of IPNS keys
 - No built-in replication to other IPFS nodes
+- Embedded node requires more resources than external mode
 
 ### 9.2 Edge Cases
 - **Rapid multiple changes**: Debounce 300ms
@@ -435,6 +607,8 @@ FileWatcher → IPFSClient → IndexManager → IPNSManager → PubsubPublisher
 - **Very long filenames**: Truncate to 255 characters
 - **Special characters in filenames**: URL-encode in index
 - **Duplicate filenames in different directories**: Add relative path to `filename`
+- **Port conflicts**: Application exits with error message
+- **Repository corruption**: Suggest repo cleanup in error message
 
 ## 10. Acceptance Criteria
 
@@ -445,14 +619,19 @@ FileWatcher → IPFSClient → IndexManager → IPNSManager → PubsubPublisher
 - ✓ IPNS updates correctly on changes
 - ✓ Pubsub messages are published every hour
 - ✓ Application recovers state after restart
+- ✓ Both external and embedded IPFS modes work
+- ✓ PubSub works in both IPFS modes
 
 ### 10.2 Non-Functional
-- ✓ Processing 1000 files takes < 5 minutes (with `--nocopy`)
-- ✓ Memory usage < 500MB with 10000 files
+- ✓ Processing 1000 files takes < 5 minutes (with `--nocopy` in external mode)
+- ✓ Memory usage < 500MB with 10000 files (external mode)
+- ✓ Memory usage < 1GB with 10000 files (embedded mode)
 - ✓ Application recovers from IPFS unavailability in < 1 minute
 - ✓ 99.9% uptime during continuous 30-day operation
+- ✓ Embedded node starts within 30 seconds
+- ✓ Port conflict detected and reported before node start
 
-## 11. Risks and Weaknesses
+## 11. Risks and Mitigations
 
 ### 11.1 Critical Risks
 1. **Race condition during rapid file changes**
@@ -466,6 +645,14 @@ FileWatcher → IPFSClient → IndexManager → IPNSManager → PubsubPublisher
 3. **Conflicts when multiple instances run concurrently**
    - Problem: Two instances may process the same files
    - Mitigation: Lock file (`~/.ipfs_publisher/.lock`) with PID check to prevent multiple runs
+
+4. **Embedded node port conflicts**
+   - Problem: Cannot start if ports are occupied
+   - Mitigation: Pre-startup port availability check with clear error messages
+
+5. **Embedded node repository corruption**
+   - Problem: Crashes or improper shutdown may corrupt repo
+   - Mitigation: Proper shutdown handlers, repo lock files, recovery procedures
 
 ### 11.2 Scaling Issues
 1. **NDJSON index grows without bound**
@@ -481,6 +668,10 @@ FileWatcher → IPFSClient → IndexManager → IPNSManager → PubsubPublisher
    - Problem: With many updates an int may overflow
    - Mitigation: Use `uint64` (sufficient for ~1.8e19 updates)
 
+4. **Embedded node storage growth**
+   - Problem: Repository grows indefinitely
+   - Mitigation: Configurable garbage collection, storage limits
+
 ### 11.3 Reliability Issues
 1. **IPNS republish may not keep up with changes**
    - Problem: IPNS TTL 24 hours may cause staleness between updates
@@ -494,6 +685,10 @@ FileWatcher → IPFSClient → IndexManager → IPNSManager → PubsubPublisher
    - Problem: IPFS API returns CID but data might be corrupted or incomplete
    - Mitigation: Trust IPFS API. Optional verification by re-reading file from IPFS can be added (future)
 
+4. **Embedded PubSub node isolation**
+   - Problem: Separate PubSub node may have peer discovery issues
+   - Mitigation: Use standard libp2p bootstrap, monitor peer count
+
 ### 11.4 UX Issues
 1. **No progress indication on first run**
    - Problem: User cannot see progress
@@ -502,6 +697,10 @@ FileWatcher → IPFSClient → IndexManager → IPNSManager → PubsubPublisher
 2. **Unclear why a file is not processed**
    - Problem: File can be ignored for many reasons (extension, permissions)
    - Mitigation: Explicit WARNING logs for ignored files
+
+3. **Embedded mode complexity**
+   - Problem: Users may not understand difference between modes
+   - Mitigation: Clear documentation, sensible defaults, mode indicator in logs
 
 ### 11.5 Security Issues
 1. **Public key in Pubsub can be spoofed**
@@ -512,14 +711,22 @@ FileWatcher → IPFSClient → IndexManager → IPNSManager → PubsubPublisher
    - Problem: Attacker can flood the topic
    - Mitigation: Rate limiting on receivers
 
+3. **Embedded node network exposure**
+   - Problem: Swarm port exposed to internet
+   - Mitigation: Firewall configuration guidance, optional private networks
+
 ### 11.6 Operational Risks
 1. **No automatic cleanup of old CIDs in IPFS**
    - Problem: IPFS node may run out of space with frequent updates
-   - Mitigation: Periodic garbage collection or unpinning old versions
+   - Mitigation: Periodic garbage collection or unpinning old versions (especially for embedded mode)
 
 2. **Debugging difficulty for IPFS issues**
    - Problem: IPFS API errors may be uninformative
-   - Mitigation: Verbose logging of IPFS requests/responses
+   - Mitigation: Verbose logging of IPFS requests/responses, embedded node debug logs
+
+3. **Port management complexity**
+   - Problem: Users may not know which ports to configure
+   - Mitigation: Sensible defaults, clear error messages, documentation
 
 ## 12. Remediation Recommendations
 
@@ -528,12 +735,16 @@ FileWatcher → IPFSClient → IndexManager → IPNSManager → PubsubPublisher
 2. Implement integrity check (mtime after upload)
 3. Use `uint64` for the version counter
 4. Implement graceful shutdown with state save
+5. Port availability check before embedded node start
+6. Separate PubSub node with proper bootstrap
 
 ### 12.2 Medium Priority (v1.1)
 1. Implement streaming index processing for large collections
 2. Add index size monitoring with alerts
 3. Add retry logic with exponential backoff for IPFS operations
 4. Implement periodic IPNS refresh (every 12 hours)
+5. Embedded node garbage collection
+6. PubSub peer count monitoring
 
 ### 12.3 Low Priority (future)
 1. Optional verification of uploaded files (config flag)
@@ -541,6 +752,7 @@ FileWatcher → IPFSClient → IndexManager → IPNSManager → PubsubPublisher
 3. Add metrics and monitoring
 4. Implement automatic garbage collection of old CIDs
 5. Add a web UI for monitoring
+6. Hybrid IPFS mode support
 
 ## 13. Implementation Plan (Phased)
 
@@ -549,10 +761,11 @@ FileWatcher → IPFSClient → IndexManager → IPNSManager → PubsubPublisher
 
 **Tasks:**
 1. Initialize Go module and project structure
-2. Implement YAML configuration loading
+2. Implement YAML configuration loading with IPFS mode selection
 3. Set up logging (file + console)
 4. Implement lock file mechanism
 5. Basic CLI skeleton with flags
+6. Configuration validation (port conflicts, path checks)
 
 **Project structure:**
 ```
@@ -585,41 +798,48 @@ cat ~/.ipfs_publisher/logs/app.log
 
 # Test 4: Config validation
 ./ipfs-publisher --config invalid.yaml  # should error
+
+# Test 5: IPFS mode validation
+# Set invalid mode in config, expect error
 ```
 
 **Readiness criteria:**
 - ✓ Application starts and reads config
+- ✓ IPFS mode configuration parsed correctly
 - ✓ Logs written to file and console
 - ✓ Second instance cannot start
 - ✓ Graceful shutdown on Ctrl+C
 
 ---
 
-### Phase 2: IPFS client and basic operations (2-3 days)
-**Goal**: Connect to IPFS and implement file upload
+### Phase 2: External IPFS client and basic operations (2-3 days)
+**Goal**: Connect to external IPFS and implement file upload
 
 **Tasks:**
-1. Implement `IPFSClient` component
-2. Implement connection to IPFS API
-3. Implement function to add a file to IPFS
-4. Error handling and retry logic
-5. Support `--nocopy` and `--pin` options
+1. Implement `IPFSClient` interface
+2. Implement external IPFS client (HTTP API)
+3. Implement connection to external IPFS API
+4. Implement function to add a file to IPFS
+5. Error handling and retry logic
+6. Support `--nocopy` and `--pin` options
+7. IPNS operations via external node
 
 **New files:**
 ```
 internal/
 ├── ipfs/
-│   ├── client.go
+│   ├── client.go        # Interface
+│   ├── external.go      # HTTP API implementation
 │   └── options.go
 ```
 
 **Manual tests:**
 ```bash
-# Prepare: start IPFS daemon
+# Prepare: start external IPFS daemon
 ipfs daemon
 
 # Test 1: Check connection
-./ipfs-publisher --check-ipfs
+./ipfs-publisher --check-ipfs --ipfs-mode external
 # Expect: "✓ Connected to IPFS node at http://localhost:5001"
 
 # Test 2: Upload a single file (test command)
@@ -639,26 +859,180 @@ ipfs daemon
 ./ipfs-publisher --test-upload /path/to/test.mp3
 ipfs pin ls | grep QmXxx
 # Expect: file is pinned
+
+# Test 6: IPNS operations
+./ipfs-publisher --test-ipns
+# Expect: IPNS record created and resolvable
 ```
 
 **Readiness criteria:**
-- ✓ Successful connection to IPFS API
+- ✓ Successful connection to external IPFS API
 - ✓ Files upload and return CIDs
 - ✓ `--nocopy` mode works
 - ✓ Pinning works
 - ✓ Application waits for IPFS when unavailable
+- ✓ IPNS publish/resolve works
 
 ---
 
-### Phase 3: Directory scanning and index creation (2-3 days)
+### Phase 3: Embedded IPFS node (3-4 days)
+**Goal**: Implement full embedded IPFS node functionality
+
+**Tasks:**
+1. Implement embedded IPFS node wrapper
+2. Repository initialization and management
+3. Port availability checks
+4. Node lifecycle management (start/stop)
+5. Configuration of swarm/API/gateway ports
+6. Bootstrap peer connection
+7. Graceful shutdown with cleanup
+8. Implement same IPFSClient interface for embedded node
+
+**New files:**
+```
+internal/
+├── ipfs/
+│   ├── embedded.go      # Embedded node implementation
+│   └── repo.go          # Repository management
+```
+
+**Manual tests:**
+```bash
+# Test 1: First run with embedded mode
+rm -rf ~/.ipfs_publisher/ipfs-repo
+./ipfs-publisher --ipfs-mode embedded
+# Expect: 
+# - Repository initialization
+# - Node startup logs
+# - Peer connections established
+
+# Test 2: Port conflict detection
+# Start external IPFS on default ports
+ipfs daemon &
+# Try to start with conflicting ports in config
+./ipfs-publisher --ipfs-mode embedded
+# Expect: Error message about port 4002/5002/8081 being occupied
+
+# Test 3: Custom ports
+# Update config with custom ports
+./ipfs-publisher --ipfs-mode embedded
+netstat -tuln | grep <custom_port>
+# Expect: ports listening
+
+# Test 4: Bootstrap and peer discovery
+./ipfs-publisher --ipfs-mode embedded
+# Wait 60 seconds
+# Check logs for peer connections
+# Expect: "Connected to X peers"
+
+# Test 5: Repository persistence
+./ipfs-publisher --ipfs-mode embedded
+# Upload some files
+# Stop and restart
+./ipfs-publisher --ipfs-mode embedded
+# Expect: Repository reused, peer identity preserved
+
+# Test 6: Graceful shutdown
+./ipfs-publisher --ipfs-mode embedded
+# Send SIGTERM or Ctrl+C
+# Expect: "Shutting down embedded IPFS node..." then clean exit
+
+# Test 7: Upload via embedded node
+./ipfs-publisher --ipfs-mode embedded --test-upload /path/to/test.mp3
+# Expect: File added successfully
+# Verify from external node:
+ipfs cat <CID>
+```
+
+**Readiness criteria:**
+- ✓ Embedded node initializes repository
+- ✓ Port conflicts detected before startup
+- ✓ Node starts and accepts connections
+- ✓ Bootstrap peers connected
+- ✓ Files can be added via embedded node
+- ✓ Repository persists between runs
+- ✓ Graceful shutdown works
+- ✓ Same IPFSClient interface as external mode
+
+---
+
+### Phase 4: Embedded PubSub node (2-3 days)
+**Goal**: Implement standalone libp2p PubSub node
+
+**Tasks:**
+1. Create lightweight libp2p node for PubSub only
+2. Implement GossipSub protocol
+3. Bootstrap peer discovery
+4. Message publishing
+5. Integration with both IPFS modes
+6. Signature generation and verification
+
+**New files:**
+```
+internal/
+├── pubsub/
+│   ├── node.go          # Embedded PubSub node
+│   ├── publisher.go     # Message publisher
+│   └── message.go       # Message format and signing
+```
+
+**Manual tests:**
+```bash
+# Test 1: PubSub node starts in external IPFS mode
+./ipfs-publisher --ipfs-mode external
+# Expect logs: "Started embedded PubSub node on port XXXX"
+
+# Test 2: PubSub node starts in embedded IPFS mode
+./ipfs-publisher --ipfs-mode embedded
+# Expect logs: "Started embedded PubSub node on port XXXX"
+
+# Test 3: Subscribe to topic from external IPFS
+ipfs pubsub sub mdn/collections/announce
+
+# Test 4: Publish test message
+./ipfs-publisher --test-pubsub
+# Expect message received in subscriber
+
+# Test 5: Message format validation
+# Capture message and verify JSON structure
+# Expect all required fields present
+
+# Test 6: Signature verification
+# Provide verification script
+./verify-signature.sh <pubsub_message>
+# Expect: "✓ Signature valid"
+
+# Test 7: Peer discovery
+# Check PubSub node logs for peer connections
+# Expect: "PubSub node connected to X peers"
+
+# Test 8: Message delivery across restarts
+# Start subscriber
+# Restart publisher
+# Expect: Subscriber receives messages after publisher restart
+```
+
+**Readiness criteria:**
+- ✓ PubSub node starts independently
+- ✓ Works in both IPFS modes
+- ✓ Connects to bootstrap peers
+- ✓ Messages published successfully
+- ✓ Message format correct
+- ✓ Signatures valid
+- ✓ Peer discovery works
+
+---
+
+### Phase 5: Directory scanning and index creation (2-3 days)
 **Goal**: Scan directories and create NDJSON index
 
 **Tasks:**
 1. Implement directory scanner
 2. Filter by extensions
 3. Create NDJSON index
-4. Upload all files to IPFS
-5. Progress bar for large batches
+4. Upload all files to IPFS (mode-aware)
+5. Upload index to IPFS
+6. Progress bar for large batches
 
 **New files:**
 ```
@@ -677,61 +1051,66 @@ mkdir -p ~/test-media
 cp some-files.mp3 ~/test-media/
 cp some-video.mkv ~/test-media/
 
-# Update config.yaml to include:
-# directories:
-#   - "~/test-media"
-# extensions:
-#   - "mp3"
-#   - "mkv"
-
-# Test 1: Initial scan (dry-run)
-./ipfs-publisher --dry-run
+# Test 1: Initial scan (dry-run) with external mode
+./ipfs-publisher --dry-run --ipfs-mode external
 # Expect: list of found files, no uploads
 
-# Test 2: Upload all files
-./ipfs-publisher
+# Test 2: Initial scan (dry-run) with embedded mode
+./ipfs-publisher --dry-run --ipfs-mode embedded
+# Expect: same list of files
+
+# Test 3: Upload all files (external mode)
+./ipfs-publisher --ipfs-mode external
 # Expect:
 # - Progress bar with percent
 # - Logs per file
 # - Creation of ~/.ipfs_publisher/collection.ndjson
 
-# Test 3: Check index contents
+# Test 4: Upload all files (embedded mode)
+./ipfs-publisher --ipfs-mode embedded
+# Expect: same behavior as external mode
+
+# Test 5: Check index contents
 cat ~/.ipfs_publisher/collection.ndjson
 # Expect lines like:
 # {"id":1,"CID":"QmXxx...","filename":"file1.mp3","extension":"mp3"}
-# {"id":2,"CID":"QmYyy...","filename":"file2.mkv","extension":"mkv"}
 
-# Test 4: Filtering
+# Test 6: Index uploaded to IPFS
+INDEX_CID=$(cat ~/.ipfs_publisher/state.json | jq -r .lastIndexCID)
+ipfs cat $INDEX_CID
+# Expect: NDJSON content
+
+# Test 7: Filtering
 touch ~/test-media/ignored.txt
 ./ipfs-publisher --dry-run
 # Expect: ignored.txt not listed
 
-# Test 5: Multiple directories
-# Add another directory to config and run
-
-# Test 6: Large batch (>100 files)
+# Test 8: Large batch (>100 files)
+for i in {1..150}; do touch ~/test-media/file-$i.mp3; done
 ./ipfs-publisher
 # Expect: working progress bar with ETA
 ```
 
 **Readiness criteria:**
-- ✓ Files from configured directories are found
+- ✓ Files from configured directories found
 - ✓ Extension filtering works
 - ✓ NDJSON index created correctly
 - ✓ Files uploaded to IPFS with correct CIDs
+- ✓ Index uploaded to IPFS
 - ✓ Progress bar works
+- ✓ Works in both IPFS modes
 
 ---
 
-### Phase 4: IPNS and key management (2 days)
+### Phase 6: IPNS and key management (2 days)
 **Goal**: Generate keys and publish index through IPNS
 
 **Tasks:**
 1. Ed25519 key pair generation
-2. Save keys to disk
-3. Upload index to IPFS
-4. Create IPNS record
-5. Update IPNS on changes
+2. Save keys to disk with correct permissions
+3. Create IPNS record (mode-aware)
+4. Update IPNS on changes
+5. Integration with state management
 
 **New files:**
 ```
@@ -747,111 +1126,128 @@ internal/
 # Test 1: Key generation on first run
 rm -rf ~/.ipfs_publisher/keys
 ./ipfs-publisher
-# Expect: creation of private.key and public.key and log "Generated new IPNS keypair"
+# Expect: creation of private.key and public.key
 
-# Test 2: Use existing keys
-./ipfs-publisher
-# Expect: "Loaded existing IPNS keypair"
+# Test 2: Key permissions
+ls -la ~/.ipfs_publisher/keys/
+# Expect: private.key with 0600, directory with 0700
 
-# Test 3: IPNS publish
-./ipfs-publisher
-cat ~/.ipfs_publisher/state.json | jq .ipns
-# Expect: IPNS hash like "k51qzi5uqu5d..."
-
-# Test 4: Resolve IPNS
+# Test 3: IPNS publish (external mode)
+./ipfs-publisher --ipfs-mode external
 IPNS_HASH=$(cat ~/.ipfs_publisher/state.json | jq -r .ipns)
 ipfs name resolve $IPNS_HASH
 # Expect: index CID
+
+# Test 4: IPNS publish (embedded mode)
+./ipfs-publisher --ipfs-mode embedded
+IPNS_HASH=$(cat ~/.ipfs_publisher/state.json | jq -r .ipns)
+# Resolve from external node
+ipfs name resolve $IPNS_HASH
+# Expect: index CID (may take time to propagate via DHT)
 
 # Test 5: Fetch index via IPNS
 ipfs cat $IPNS_HASH
 # Expect: NDJSON content
 
-# Test 6: Update collection and see IPNS change
+# Test 6: Update collection and IPNS
 cp new-file.mp3 ~/test-media/
 ./ipfs-publisher
 ipfs name resolve $IPNS_HASH
 # Expect: new CID
 
-# Test 7: Key permissions
-ls -la ~/.ipfs_publisher/keys/
-# Expect files with correct modes
+# Test 7: Use existing keys
+./ipfs-publisher
+# Expect: "Loaded existing IPNS keypair"
+
+# Test 8: IPNS in state file
+cat ~/.ipfs_publisher/state.json | jq .
+# Expect: ipns field with k51... hash
 ```
 
 **Readiness criteria:**
-- ✓ Keys are generated on first run
+- ✓ Keys generated on first run
 - ✓ Keys loaded on subsequent runs
+- ✓ Correct file permissions
 - ✓ Index uploaded to IPFS
-- ✓ IPNS record created and points to index
-- ✓ IPNS updates on collection changes
-- ✓ Correct file permissions for keys
+- ✓ IPNS record created
+- ✓ IPNS points to index
+- ✓ IPNS updates on changes
+- ✓ Works in both IPFS modes
 
 ---
 
-### Phase 5: Pubsub publishing (1-2 days)
-**Goal**: Publish announcements to Pubsub
+### Phase 7: Complete PubSub integration (1-2 days)
+**Goal**: Full PubSub announcement flow
 
 **Tasks:**
-1. Create signed Pubsub message
-2. Publish to topic
-3. Periodic hourly publishing
-4. Increment version counter
-
-**New files:**
-```
-internal/
-├── pubsub/
-│   ├── publisher.go
-│   └── message.go
-```
+1. Integrate PubSub with index updates
+2. Implement periodic announcements
+3. Version counter management
+4. Message signing with IPNS keys
+5. Error handling and retries
 
 **Manual tests:**
 ```bash
-# Test 1: Subscribe to topic
-ipfs pubsub sub mdn/collections/announce
+# Test 1: Subscribe and monitor
+ipfs pubsub sub mdn/collections/announce &
 
-# Test 2: First publish
+# Test 2: First publish after initial scan
 ./ipfs-publisher
-# Expect a JSON message in subscriber terminal
+# Expect: PubSub message with version=1
 
-# Test 3: Signature verification
-# Provide a verification script
-./verify-signature.sh <pubsub_message>
-# Expect: "✓ Signature valid"
+# Test 3: Add file triggers publish
+cp new-song.mp3 ~/test-media/
+# Expect: PubSub message with version=2
 
-# Test 4: Add file and publish
-cp another.mp3 ~/test-media/
-# Expect pubsub message with incremented version
+# Test 4: Message content validation
+# Capture last message
+# Verify: version, ipns, publicKey, collectionSize, timestamp, signature
 
-# Test 5: Periodic publish
-# Wait or reduce interval for test
+# Test 5: Periodic announcements
+# Wait 60+ minutes or reduce interval in config
+# Expect: Repeated messages with same version if no changes
 
 # Test 6: Timestamp behavior
-# Timestamp should not change on repeated publishes without changes
+# Note timestamp from first message
+# Wait for periodic announcement
+# Expect: timestamp unchanged if no collection changes
 
-# Test 7: Pubsub error handling
-# Stop IPFS daemon and watch error logs
+# Test 7: Signature verification
+./verify-signature.sh <captured_message>
+# Expect: signature valid with publicKey from message
+
+# Test 8: PubSub in both IPFS modes
+# Test with --ipfs-mode external
+# Test with --ipfs-mode embedded
+# Expect: PubSub works identically in both modes
+
+# Test 9: PubSub errors
+# Kill PubSub node process manually
+# Expect: error logs, automatic restart attempt
 ```
 
 **Readiness criteria:**
-- ✓ Messages published to the configured topic
+- ✓ Messages published on collection changes
+- ✓ Periodic announcements work
 - ✓ Message format matches spec
-- ✓ Signature verifiable
-- ✓ Version increments on changes
-- ✓ Timestamp unchanged for repeated publishes
-- ✓ Periodic publishes work
+- ✓ Signatures verifiable
+- ✓ Version increments correctly
+- ✓ Timestamp behavior correct
+- ✓ Works in both IPFS modes
+- ✓ Error handling robust
 
 ---
 
-### Phase 6: File watcher and incremental updates (2-3 days)
-**Goal**: Real-time file change detection
+### Phase 8: File watcher and state management (2-3 days)
+**Goal**: Real-time file change detection and state persistence
 
 **Tasks:**
 1. Integrate `fsnotify`
 2. Handle create/modify/delete/rename events
 3. Incremental index updates
 4. Debouncing for frequent changes
-5. Update state
+5. State save and restore
+6. Recovery after crashes
 
 **New files:**
 ```
@@ -867,70 +1263,84 @@ internal/
 # Test 1: Run in watch mode
 ./ipfs-publisher
 
-# Test 2: Add a new file
+# Test 2: Add new file
 cp new-song.mp3 ~/test-media/
-# Expect logs and processing plus pubsub update
+# Expect: automatic processing and PubSub update
 
-# Test 3: Modify a file
+# Test 3: Modify file
 echo "updated" >> ~/test-media/existing.mp3
-# Expect reupload and index update
+# Expect: reupload, index update, version increment
 
-# Test 4: Delete a file
+# Test 4: Delete file
 rm ~/test-media/old-file.mp3
-# Expect removal from index and version increment
+# Expect: removal from index, version increment
 
-# Test 5: Rename a file
-mv ~/test-media/song.mp3 ~/test-media/renamed-song.mp3
-# Expect filename update, id and CID preserved
+# Test 5: Rename file
+mv ~/test-media/song.mp3 ~/test-media/renamed.mp3
+# Expect: filename updated, id and CID preserved
 
-# Test 6: Debounce behavior
-for i in 1 2 3 4 5 6 7 8 9 10; do
+# Test 6: Debounce rapid changes
+for i in 1 2 3 4 5; do
   echo "change $i" >> ~/test-media/test.mp3
   sleep 0.1
 done
-# Expect only one processing after debounce period
+# Expect: only one processing after 300ms debounce
 
-# Test 7: State file check
+# Test 7: State persistence
 cat ~/.ipfs_publisher/state.json | jq .
+# Expect: version, ipns, lastIndexCID, files with metadata
 
-# Test 8: Recovery after restart
+# Test 8: Recovery after crash
 ./ipfs-publisher
-# Add a file, then kill process and restart to verify recovery
+# Add files, kill -9 process
+./ipfs-publisher
+# Expect: state loaded, missing files reprocessed
 
-# Test 9: Ignore temp and hidden files
+# Test 9: Ignore patterns
 echo "test" > ~/test-media/.hidden
-echo "test" > ~/test-media/file.tmp
-# Expect these are ignored
+echo "test" > ~/test-media/file~
+# Expect: ignored in logs
+
+# Test 10: State in both IPFS modes
+# Test state persistence with external mode
+# Test state persistence with embedded mode
+# Expect: state format identical
 ```
 
 **Readiness criteria:**
-- ✓ New files processed automatically
-- ✓ Changes detected and processed
-- ✓ Deletions handled correctly
-- ✓ Renames preserve id and CID
-- ✓ Debounce prevents redundant work
-- ✓ State persists and recovers
-- ✓ Long-running stability
+- ✓ New files detected automatically
+- ✓ Changes processed correctly
+- ✓ Deletions handled
+- ✓ Renames preserve id/CID
+- ✓ Debounce works
+- ✓ State persists and loads
+- ✓ Recovery after crashes works
+- ✓ Ignore patterns work
+- ✓ Works in both IPFS modes
 
 ---
 
-### Phase 7: Final polish and testing (1-2 days)
-**Goal**: Improve UX and handle edge cases
+### Phase 9: Final polish and edge cases (2-3 days)
+**Goal**: Handle edge cases, improve UX, optimize performance
 
 **Tasks:**
-1. Improve logging and error messages
-2. Add help and documentation
-3. Handle edge cases
-4. Test with large collections
-5. Performance tuning
+1. Improve error messages and logging
+2. Add comprehensive help and documentation
+3. Handle all edge cases from PRD
+4. Performance tuning for large collections
+5. Memory leak checks
+6. Resource cleanup
+7. Mode-specific optimizations
 
 **Manual tests:**
 ```bash
-# Test 1: Help output
+# Test 1: Help and documentation
 ./ipfs-publisher --help
+./ipfs-publisher --version
 
-# Test 2: Init config
+# Test 2: Init command
 ./ipfs-publisher --init
+# Expect: config file created, keys generated
 
 # Test 3: Special characters in filenames
 touch ~/test-media/"file with spaces.mp3"
@@ -941,77 +1351,327 @@ touch ~/test-media/"file'with\"quotes.mp3"
 # Test 4: Very long filenames
 touch ~/test-media/"$(printf 'a%.0s' {1..300}).mp3"
 ./ipfs-publisher
+# Expect: handled gracefully (truncated or error logged)
 
 # Test 5: Symlinks
-ln -s ~/other-dir ~/test-media/symlink-dir
+ln -s ~/other-dir ~/test-media/symlink
 ./ipfs-publisher --dry-run
+# Expect: ignored or followed (document behavior)
 
 # Test 6: Large collection stress test
-for i in (seq 1 1000)
+for i in {1..1000}; do
   touch ~/test-media/file-$i.mp3
-end
+done
 ./ipfs-publisher
+# Expect: completes successfully, reasonable memory usage
 
-# Test 7: Long run and resource monitoring
+# Test 7: Resource monitoring during long run
+./ipfs-publisher &
+# Monitor with: watch -n 5 'ps aux | grep ipfs-publisher'
+# Add/remove files periodically for 1 hour
+# Expect: stable memory, no leaks
 
-# Test 8: Graceful shutdown
-# Ctrl+C during processing and verify state saved and lock removed
+# Test 8: Graceful shutdown during operations
+./ipfs-publisher
+# While uploading files, press Ctrl+C
+# Expect: "Shutting down gracefully...", state saved, lock removed
 
-# Test 9: Debug logs
-./ipfs-publisher --log-level debug
+# Test 9: Mode switching
+# Run with external mode
+./ipfs-publisher --ipfs-mode external
+# Stop, switch config to embedded
+./ipfs-publisher --ipfs-mode embedded
+# Expect: state preserved, continues from where it left off
+
+# Test 10: Embedded node resource usage
+# Monitor embedded node:
+./ipfs-publisher --ipfs-mode embedded
+# Check: memory, CPU, disk I/O, peer connections
+# Expect: reasonable resource usage
+
+# Test 11: Configuration validation
+# Invalid IPFS mode
+# Invalid ports (negative, out of range)
+# Expect: clear error messages
+
+# Test 12: Debug logs
+./ipfs-publisher --config config.yaml
+# Set logging.level: debug in config
+# Expect: detailed logs for troubleshooting
 ```
 
 **Readiness criteria:**
-- ✓ Edge cases covered
-- ✓ Clear and informative logs
-- ✓ Documentation up to date
-- ✓ Performance acceptable for large collections
+- ✓ All edge cases covered
+- ✓ Clear and helpful error messages
+- ✓ Comprehensive documentation
+- ✓ Performance acceptable (per acceptance criteria)
 - ✓ No memory leaks
 - ✓ Graceful shutdown works
+- ✓ Both IPFS modes thoroughly tested
+- ✓ Resource usage within bounds
 
-## 14. Final production readiness checklist
+---
+
+### Phase 10: Integration testing and production readiness (1-2 days)
+**Goal**: End-to-end testing and final validation
+
+**Tasks:**
+1. Complete integration test suite
+2. Test all mode combinations
+3. Long-running stability tests
+4. Document deployment procedures
+5. Create troubleshooting guide
+6. Prepare release artifacts
+
+**Manual tests:**
+```bash
+# Test 1: Complete workflow (external mode)
+./ipfs-publisher --ipfs-mode external --init
+# Add test directory
+# Wait for full cycle: scan -> upload -> IPNS -> PubSub
+# Verify all components work
+
+# Test 2: Complete workflow (embedded mode)
+./ipfs-publisher --ipfs-mode embedded --init
+# Same as Test 1
+# Verify embedded node operates correctly
+
+# Test 3: 24-hour stability test
+./ipfs-publisher &
+# Run for 24+ hours with periodic file changes
+# Monitor logs, memory, CPU
+# Expect: stable operation, no crashes
+
+# Test 4: Network interruption handling
+./ipfs-publisher --ipfs-mode external
+# Disconnect network during operation
+# Expect: errors logged, retries, recovery on reconnect
+
+# Test 5: Embedded node crash recovery
+./ipfs-publisher --ipfs-mode embedded
+# Kill embedded IPFS process manually
+# Expect: detected, logged, node restarted
+
+# Test 6: Large file handling
+cp large-file-2GB.mkv ~/test-media/
+./ipfs-publisher
+# Expect: uploads successfully without OOM
+
+# Test 7: Concurrent changes
+# Script to continuously modify files
+while true; do
+  echo "update" >> ~/test-media/test-$RANDOM.mp3
+  sleep 1
+done
+./ipfs-publisher
+# Expect: handles continuous changes
+
+# Test 8: Migration between modes
+# Start with external mode, populate collection
+./ipfs-publisher --ipfs-mode external
+# Stop, switch to embedded
+./ipfs-publisher --ipfs-mode embedded
+# Expect: collection state preserved, continues operation
+
+# Test 9: Clean installation
+# Fresh system, no prior config
+./ipfs-publisher --init
+./ipfs-publisher
+# Expect: all setup automatic, works out of box
+
+# Test 10: Production deployment simulation
+# Deploy as systemd service
+sudo systemctl start ipfs-publisher
+sudo systemctl status ipfs-publisher
+# Expect: runs as service, logs to journal
+```
+
+**Readiness criteria:**
+- ✓ All integration tests pass
+- ✓ 24-hour stability test successful
+- ✓ Both IPFS modes production-ready
+- ✓ Documentation complete
+- ✓ Troubleshooting guide created
+- ✓ Deployment procedures documented
+- ✓ Release artifacts prepared
+
+---
+
+## 14. Final Production Readiness Checklist
 
 ### Functionality
 - [ ] Scan multiple directories
 - [ ] Filter by extensions
-- [ ] Upload files to IPFS
+- [ ] Upload files to IPFS (external mode)
+- [ ] Upload files to IPFS (embedded mode)
 - [ ] Create NDJSON index
-- [ ] IPNS publish
-- [ ] Pubsub announcements
+- [ ] IPNS publish (external mode)
+- [ ] IPNS publish (embedded mode)
+- [ ] PubSub announcements (always embedded)
 - [ ] Real-time change monitoring
 - [ ] Incremental updates
 - [ ] State save and restore
+- [ ] Mode switching support
+
+### IPFS Integration
+- [ ] External IPFS connection works
+- [ ] Embedded IPFS node starts successfully
+- [ ] Port conflict detection works
+- [ ] Embedded node repo persistence
+- [ ] PubSub works in both modes
+- [ ] DHT integration (embedded mode)
+- [ ] Garbage collection (embedded mode)
+- [ ] Bootstrap peer connectivity
 
 ### Reliability
 - [ ] Lock file prevents multiple runs
-- [ ] Graceful shutdown
-- [ ] Handle IPFS unavailability
-- [ ] Retry logic for IPFS operations
+- [ ] Graceful shutdown (both modes)
+- [ ] Handle IPFS unavailability (external)
+- [ ] Handle embedded node failures
+- [ ] Retry logic for operations
 - [ ] Handle files deleted during processing
 - [ ] Correct recovery after crash
+- [ ] State integrity maintained
 
 ### UX
 - [ ] Progress bar for large collections
-- [ ] Clear logs
+- [ ] Clear logs with mode indicators
 - [ ] `--help` documentation
 - [ ] `--dry-run` for testing
 - [ ] `--init` to create config
+- [ ] `--ipfs-mode` override flag
 - [ ] YAML configuration
+- [ ] Port conflict error messages
+- [ ] Mode selection guidance
 
 ### Security
 - [ ] Correct permissions for private keys (0600)
-- [ ] Signed pubsub messages
+- [ ] Keys directory permissions (0700)
+- [ ] Signed PubSub messages
 - [ ] Path validation
 - [ ] Filename sanitization
+- [ ] Embedded node security considerations
 
 ### Performance
-- [ ] < 500MB memory for 10k files
+- [ ] < 500MB memory for 10k files (external)
+- [ ] < 1GB memory for 10k files (embedded)
 - [ ] Debouncing for frequent changes
 - [ ] Streaming index processing
-- [ ] No memory leaks
+- [ ] No memory leaks (24h+ test)
+- [ ] Embedded node resource usage acceptable
 
 ### Documentation
-- [ ] README with examples
+- [ ] README with mode selection guide
 - [ ] Config format documentation
-- [ ] Troubleshooting guide
-- [ ] Usage examples
+- [ ] IPFS mode comparison table
+- [ ] Port configuration guide
+- [ ] Troubleshooting guide (mode-specific)
+- [ ] Usage examples (both modes)
+- [ ] Deployment guide
+- [ ] Migration guide between modes
+
+---
+
+## 16. Configuration Examples
+
+### Example 1: External Mode (Default)
+```yaml
+ipfs:
+  mode: "external"
+  
+  external:
+    api_url: "http://localhost:5001"
+    timeout: 300
+    add_options:
+      nocopy: true  # Uses filestore
+      pin: true
+      
+pubsub:
+  topic: "mdn/collections/announce"
+  announce_interval: 3600
+
+directories:
+  - "/home/user/media"
+
+extensions:
+  - "mp3"
+  - "mkv"
+```
+
+### Example 2: Embedded Mode (Isolated)
+```yaml
+ipfs:
+  mode: "embedded"
+  
+  embedded:
+    repo_path: "~/.ipfs_publisher/ipfs-repo"
+    swarm_port: 4002
+    api_port: 5002
+    gateway_port: 8081
+    
+    add_options:
+      pin: true
+      chunker: "size-262144"
+    
+    gc:
+      enabled: true
+      interval: 86400
+      
+pubsub:
+  topic: "mdn/collections/announce"
+  announce_interval: 3600
+
+directories:
+  - "/data/media"
+
+extensions:
+  - "mp3"
+  - "mkv"
+  - "mp4"
+```
+
+### Example 3: Production Embedded Mode
+```yaml
+ipfs:
+  mode: "embedded"
+  
+  embedded:
+    repo_path: "/var/lib/ipfs-publisher/repo"
+    swarm_port: 14001
+    api_port: 15001
+    gateway_port: 18080
+    
+    add_options:
+      pin: true
+      chunker: "size-1048576"  # 1MB chunks for large files
+      raw_leaves: true
+    
+    gc:
+      enabled: true
+      interval: 43200  # 12 hours
+      min_free_space: 5368709120  # 5GB
+
+pubsub:
+  topic: "production/media/announce"
+  announce_interval: 1800  # 30 minutes
+
+directories:
+  - "/mnt/storage/media"
+
+extensions:
+  - "mp3"
+  - "flac"
+  - "mkv"
+  - "mp4"
+
+logging:
+  level: "info"
+  file: "/var/log/ipfs-publisher/app.log"
+  max_size: 500
+  max_backups: 10
+
+behavior:
+  scan_interval: 5
+  batch_size: 20
+  state_save_interval: 30
+```

@@ -1,0 +1,67 @@
+# IPFS Media Collection Publisher Configuration
+
+# IPFS node configuration
+ipfs:
+  # Mode: "external" (use existing IPFS node) or "embedded" (run IPFS inside app)
+  mode: "external"
+  
+  # External node settings (used when mode: external)
+  external:
+    api_url: "http://localhost:5001"
+    timeout: 300  # seconds
+    add_options:
+      nocopy: false
+      pin: true
+      chunker: "size-262144"
+      raw_leaves: true
+  
+  # Embedded node settings (used when mode: embedded)
+  embedded:
+    repo_path: "~/.ipfs_publisher/ipfs-repo"
+    swarm_port: 4002
+    api_port: 5002
+    gateway_port: 8081
+    add_options:
+      pin: true
+      chunker: "size-262144"
+      raw_leaves: true
+    bootstrap_peers: []
+    gc:
+      enabled: true
+      interval: 86400  # seconds (24 hours)
+      min_free_space: 1073741824  # bytes (1GB)
+
+# PubSub configuration (always uses embedded implementation)
+pubsub:
+  topic: "mdn/collections/announce"
+  announce_interval: 3600  # seconds (1 hour)
+  bootstrap_peers: []
+  listen_port: 0  # 0 = random port
+
+# Directories to monitor
+directories:
+  - "~/test-media"
+
+# File extensions to process (case-insensitive)
+extensions:
+  - "mp3"
+  - "mp4"
+  - "mkv"
+  - "avi"
+  - "flac"
+  - "wav"
+
+# Logging
+logging:
+  level: "info"  # debug, info, warn, error
+  file: "~/.ipfs_publisher/logs/app.log"
+  max_size: 100  # MB
+  max_backups: 5
+  console: true
+
+# Application behavior
+behavior:
+  scan_interval: 10  # seconds
+  batch_size: 10
+  progress_bar: true
+  state_save_interval: 60  # seconds
