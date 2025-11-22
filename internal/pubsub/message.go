@@ -101,9 +101,14 @@ func (m *AnnouncementMessage) getBytesForSigning() ([]byte, error) {
 	return json.Marshal(msg)
 }
 
-// ToJSON converts the message to JSON bytes
+// ToJSON converts the message to JSON bytes with newline separator
 func (m *AnnouncementMessage) ToJSON() ([]byte, error) {
-	return json.Marshal(m)
+	data, err := json.Marshal(m)
+	if err != nil {
+		return nil, err
+	}
+	// Append newline to separate messages
+	return append(data, '\n'), nil
 }
 
 // FromJSON parses a message from JSON bytes

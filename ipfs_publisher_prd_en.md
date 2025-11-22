@@ -45,23 +45,32 @@ The application supports two modes of IPFS node operation:
 **Embedded Mode (default):**
 - Launch a full-featured IPFS node inside the application
 - Complete IPFS functionality including DHT, bitswap, and content routing
+- PubSub uses the same libp2p instance as IPFS node
 - Zero external dependencies - fully standalone
 - Recommended for most users and production deployments
 
 **External Mode:**
 - Connect to an existing IPFS node (e.g., IPFS Desktop, kubo daemon)
 - Use HTTP API for file operations (add, pin, get)
+- Separate lightweight libp2p node for PubSub (because external IPFS nodes don't provide PubSub API)
 - Useful for development or when IPFS Desktop is already running
 
-**PubSub Provider:**
-- **Always uses embedded implementation** regardless of IPFS mode
-- Reason: IPFS Desktop removed PubSub endpoint from HTTP API
-- Embedded PubSub runs even in external IPFS mode
+**PubSub Architecture:**
+- **Embedded IPFS mode**: PubSub runs on the same libp2p instance as IPFS
+  - Single peer identity
+  - Single swarm port
+  - PubSub automatically enabled during IPFS node initialization
+- **External IPFS mode**: Separate lightweight libp2p node for PubSub only
+  - Own peer identity (different from external IPFS node)
+  - Own swarm port
+  - Uses same bootstrap peers as IPFS for network connectivity
+  - DHT enabled for peer discovery
 
 **Mode Selection:**
 - Hardcoded in configuration file
 - User explicitly chooses mode
 - No automatic fallback between modes
+- Mode change requires application restart
 
 #### 2.2.2 Connecting to External IPFS
 - Connect to an IPFS node through the HTTP API
@@ -185,17 +194,23 @@ The application supports two modes of IPFS node operation:
 
 ### 2.5 Pubsub Announcement
 
-#### 2.5.1 PubSub Provider
-- **Always uses embedded libp2p PubSub implementation**
-- Independent of IPFS node mode (external/embedded)
-- Reasons:
-  - IPFS Desktop removed PubSub endpoint from HTTP API
-  - Ensures consistent PubSub functionality across all configurations
-- Embedded PubSub node:
-  - Lightweight libp2p node
-  - Only PubSub protocol enabled
-  - Separate from IPFS storage node
-  - Uses standard libp2p bootstrap for peer discovery
+#### 2.5.1 PubSub Architecture
+
+**Embedded IPFS Mode:**
+- PubSub runs on the same libp2p/IPFS node instance
+- No separate PubSub node needed
+- Uses IPFS node's peer identity and swarm port
+- PubSub protocol automatically enabled during IPFS node initialization
+- Participates in IPFS DHT for peer discovery
+
+**External IPFS Mode:**
+- Separate lightweight libp2p node for PubSub only
+- Reason: External IPFS nodes (IPFS Desktop, kubo) removed PubSub endpoint from HTTP API
+- Own peer identity (independent from external IPFS node)
+- Own swarm port (configurable)
+- Uses same bootstrap peers as IPFS for network connectivity
+- DHT enabled for announcing and discovering peers subscribed to topics
+- Minimal resource footprint (only PubSub and DHT protocols)
 
 #### 2.5.2 Message format
 ```json
@@ -225,7 +240,9 @@ The application supports two modes of IPFS node operation:
 
 #### 2.5.4 Publishing to Pubsub
 - Topic: configurable in config (default `mdn/collections/announce`)
-- Published via embedded PubSub node
+- Published via:
+  - **Embedded mode**: IPFS node's libp2p instance
+  - **External mode**: Standalone PubSub libp2p node
 - Publish occurs:
   - On the first upload of all files
   - After each collection update
@@ -362,14 +379,17 @@ ipfs:
       interval: 86400  # seconds (24 hours)
       min_free_space: 1073741824  # bytes (1GB)
 
-# PubSub configuration (always uses embedded implementation)
+# PubSub configuration
 pubsub:
   topic: "mdn/collections/announce"
   announce_interval: 3600  # seconds (1 hour)
   
-  # Embedded PubSub node settings
-  bootstrap_peers: []  # leave empty for standard libp2p bootstrap
-  listen_port: 0       # 0 = random port
+  # Standalone PubSub node settings (used only in external IPFS mode)
+  # In embedded IPFS mode, PubSub uses the same libp2p instance as IPFS
+  standalone:
+    bootstrap_peers: []  # leave empty for standard IPFS bootstrap nodes
+    swarm_port: 4003     # libp2p swarm port for standalone PubSub node
+    enable_dht: true     # DHT for peer discovery and topic announcement
 
 # Directories to monitor
 directories:
@@ -423,7 +443,7 @@ Flags:
 - **IPFS Integration**: 
   - External mode: `github.com/ipfs/go-ipfs-api` (HTTP API client)
   - Embedded mode: `github.com/ipfs/kubo` (full IPFS node)
-- **PubSub**: `github.com/libp2p/go-libp2p-pubsub` (always embedded)
+- **PubSub**: `github.com/libp2p/go-libp2p-pubsub` (embedded in IPFS or standalone)
 - **File System Monitoring**: `github.com/fsnotify/fsnotify`
 - **Logging**: `github.com/sirupsen/logrus` or `go.uber.org/zap`
 - **Configuration**: `github.com/spf13/viper`
@@ -436,10 +456,10 @@ Flags:
 1. **FileWatcher**: Filesystem monitoring
 2. **IPFSClient**: Interaction with IPFS (external or embedded)
 3. **EmbeddedIPFS**: Embedded IPFS node lifecycle management
-4. **PubsubNode**: Embedded libp2p PubSub node (always used)
+4. **StandalonePubSub**: Standalone libp2p PubSub node (only for external IPFS mode)
 5. **IndexManager**: NDJSON index management
 6. **IPNSManager**: Create and update IPNS records
-7. **PubsubPublisher**: Publish announcements to Pubsub
+7. **PubsubPublisher**: Publish announcements to Pubsub (mode-aware)
 8. **StateManager**: Save and restore state
 9. **KeyManager**: Key generation and management
 
@@ -447,9 +467,12 @@ Flags:
 ```
 FileWatcher → IPFSClient → IndexManager → IPNSManager
                 ↓              ↓             ↓
-         StateManager    PubsubNode ← PubsubPublisher
+         StateManager    PubsubPublisher (mode-aware)
                               ↓
-                      (Always Embedded)
+                    ┌─────────┴─────────┐
+                    │                   │
+            Embedded IPFS         Standalone PubSub
+            (with PubSub)         (external mode only)
 ```
 
 #### 4.2.3 IPFS Mode Architecture
@@ -461,27 +484,32 @@ Application
 │   ├── Add files
 │   ├── Pin content
 │   └── IPNS publish
-└── Embedded PubSub Node (separate)
+└── Standalone PubSub Node (libp2p)
+    ├── Own peer identity
+    ├── Own swarm port (4003)
+    ├── DHT for peer discovery
+    ├── Same bootstrap as IPFS
     └── Announce messages
 ```
 
 **Embedded Mode:**
 ```
 Application
-├── Embedded IPFS Node (full)
-│   ├── Add files
-│   ├── Pin content
-│   ├── IPNS publish
-│   ├── DHT routing
-│   └── Bitswap
-└── Embedded PubSub Node (separate)
-    └── Announce messages
+└── Embedded IPFS Node (full libp2p instance)
+    ├── Add files
+    ├── Pin content
+    ├── IPNS publish
+    ├── DHT routing
+    ├── Bitswap
+    └── PubSub (on same libp2p instance)
+        └── Announce messages
 ```
 
 ### 4.3 Concurrency Model
 - Main goroutine for FileWatcher
 - Separate goroutine for periodic Pubsub announcements
-- Separate goroutine for embedded IPFS node (if used)
+- Separate goroutine for embedded IPFS node (if used in embedded mode)
+- Separate goroutine for standalone PubSub node (if used in external mode)
 - Worker pool (optional) for parallel uploads to IPFS
 - Channels for coordination between components
 - Mutex to protect shared state
@@ -686,9 +714,9 @@ Application
    - Problem: IPFS API returns CID but data might be corrupted or incomplete
    - Mitigation: Trust IPFS API. Optional verification by re-reading file from IPFS can be added (future)
 
-4. **Embedded PubSub node isolation**
-   - Problem: Separate PubSub node may have peer discovery issues
-   - Mitigation: Use standard libp2p bootstrap, monitor peer count
+4. **Standalone PubSub node isolation**
+   - Problem: Separate PubSub node (in external mode) may have peer discovery issues
+   - Mitigation: Use standard IPFS bootstrap peers, enable DHT, monitor peer count
 
 ### 11.4 UX Issues
 1. **No progress indication on first run**
@@ -745,7 +773,8 @@ Application
 3. Add retry logic with exponential backoff for IPFS operations
 4. Implement periodic IPNS refresh (every 12 hours)
 5. Embedded node garbage collection
-6. PubSub peer count monitoring
+6. PubSub peer count monitoring (mode-aware)
+7. Optimize standalone PubSub node resource usage
 
 ### 12.3 Low Priority (future)
 1. Optional verification of uploaded files (config flag)
@@ -958,69 +987,63 @@ ipfs cat <CID>
 ---
 
 ### Phase 4: Embedded PubSub node (2-3 days)
-**Goal**: Implement standalone libp2p PubSub node
+**Goal**: Implement PubSub on embedded IPFS node for embedded mode
 
 **Tasks:**
-1. Create lightweight libp2p node for PubSub only
-2. Implement GossipSub protocol
-3. Bootstrap peer discovery
-4. Message publishing
-5. Integration with both IPFS modes
-6. Signature generation and verification
+1. Enable PubSub protocol on embedded IPFS node
+2. Implement GossipSub configuration
+3. Message publishing via IPFS node's libp2p instance
+4. Integration with PubsubPublisher
+5. Signature generation and verification
 
 **New files:**
 ```
 internal/
 ├── pubsub/
-│   ├── node.go          # Embedded PubSub node
+│   ├── embedded.go      # PubSub via embedded IPFS
 │   ├── publisher.go     # Message publisher
 │   └── message.go       # Message format and signing
 ```
 
 **Manual tests:**
 ```bash
-# Test 1: PubSub node starts in external IPFS mode
-./ipfs-publisher --ipfs-mode external
-# Expect logs: "Started embedded PubSub node on port XXXX"
-
-# Test 2: PubSub node starts in embedded IPFS mode
+# Test 1: PubSub enabled on embedded IPFS
 ./ipfs-publisher --ipfs-mode embedded
-# Expect logs: "Started embedded PubSub node on port XXXX"
+# Expect logs: "PubSub enabled on embedded IPFS node"
 
-# Test 3: Subscribe to topic from external IPFS
-ipfs pubsub sub mdn/collections/announce
+# Test 2: Subscribe from external IPFS
+ipfs pubsub sub mdn/collections/announce &
 
-# Test 4: Publish test message
-./ipfs-publisher --test-pubsub
+# Test 3: Publish test message
+./ipfs-publisher --ipfs-mode embedded --test-pubsub
 # Expect message received in subscriber
 
-# Test 5: Message format validation
+# Test 4: Message format validation
 # Capture message and verify JSON structure
 # Expect all required fields present
 
-# Test 6: Signature verification
+# Test 5: Signature verification
 # Provide verification script
 ./verify-signature.sh <pubsub_message>
 # Expect: "✓ Signature valid"
 
-# Test 7: Peer discovery
-# Check PubSub node logs for peer connections
-# Expect: "PubSub node connected to X peers"
+# Test 6: Peer discovery for PubSub
+# Check embedded node logs for PubSub peers
+# Expect: "PubSub peers on topic: X"
 
-# Test 8: Message delivery across restarts
-# Start subscriber
-# Restart publisher
-# Expect: Subscriber receives messages after publisher restart
+# Test 7: Message delivery
+# Start multiple subscribers
+# Publish from embedded mode
+# Expect: All subscribers receive message
 ```
 
 **Readiness criteria:**
-- ✓ PubSub node starts independently
-- ✓ Works in both IPFS modes
-- ✓ Connects to bootstrap peers
+- ✓ PubSub enabled on embedded IPFS node
 - ✓ Messages published successfully
 - ✓ Message format correct
 - ✓ Signatures valid
 - ✓ Peer discovery works
+- ✓ No separate PubSub node created
 
 ---
 
@@ -1177,8 +1200,8 @@ cat ~/.ipfs_publisher/state.json | jq .
 
 ---
 
-### Phase 7: Complete PubSub integration (1-2 days)
-**Goal**: Full PubSub announcement flow
+### Phase 7: Complete PubSub integration for embedded mode (1-2 days)
+**Goal**: Full PubSub announcement flow using embedded IPFS node
 
 **Tasks:**
 1. Integrate PubSub with index updates
@@ -1193,7 +1216,7 @@ cat ~/.ipfs_publisher/state.json | jq .
 ipfs pubsub sub mdn/collections/announce &
 
 # Test 2: First publish after initial scan
-./ipfs-publisher
+./ipfs-publisher --ipfs-mode embedded
 # Expect: PubSub message with version=1
 
 # Test 3: Add file triggers publish
@@ -1217,14 +1240,9 @@ cp new-song.mp3 ~/test-media/
 ./verify-signature.sh <captured_message>
 # Expect: signature valid with publicKey from message
 
-# Test 8: PubSub in both IPFS modes
-# Test with --ipfs-mode external
-# Test with --ipfs-mode embedded
-# Expect: PubSub works identically in both modes
-
-# Test 9: PubSub errors
-# Kill PubSub node process manually
-# Expect: error logs, automatic restart attempt
+# Test 8: PubSub uses embedded IPFS
+# Verify in logs that no separate PubSub node is created
+# Expect: "Using embedded IPFS node for PubSub"
 ```
 
 **Readiness criteria:**
@@ -1234,8 +1252,141 @@ cp new-song.mp3 ~/test-media/
 - ✓ Signatures verifiable
 - ✓ Version increments correctly
 - ✓ Timestamp behavior correct
-- ✓ Works in both IPFS modes
-- ✓ Error handling robust
+- ✓ Uses embedded IPFS libp2p instance
+- ✓ No separate PubSub node created
+
+---
+
+### Phase 7.1: Standalone PubSub for External IPFS Mode (2-3 days)
+**Goal**: Implement standalone libp2p PubSub node for external IPFS mode
+
+**Context**: Phase 7 implemented PubSub for embedded IPFS mode (using the same libp2p instance). Now we need to add support for external IPFS mode where a separate lightweight PubSub node is required.
+
+**Tasks:**
+1. Create standalone libp2p node for PubSub only
+2. Implement GossipSub protocol on standalone node
+3. Configure separate swarm port for PubSub node
+4. Use same bootstrap peers as IPFS for network connectivity
+5. Enable DHT for peer discovery and topic announcement
+6. Integrate standalone PubSub with PubsubPublisher (mode detection)
+7. Lifecycle management (start/stop with application)
+8. Monitor peer connections and DHT status
+
+**New files:**
+```
+internal/
+├── pubsub/
+│   ├── standalone.go    # Standalone libp2p PubSub node (external mode)
+│   ├── embedded.go      # Wrapper for embedded IPFS PubSub (embedded mode)
+│   └── publisher.go     # Mode-aware publisher (updated)
+```
+
+**Manual tests:**
+```bash
+# Prepare: start external IPFS daemon
+ipfs daemon &
+
+# Test 1: Standalone PubSub node starts in external mode
+./ipfs-publisher --ipfs-mode external
+# Expect logs: 
+# - "Starting standalone PubSub node on port 4003"
+# - "PubSub node peer ID: 12D3Koo..."
+# - "Connected to X bootstrap peers"
+
+# Test 2: No standalone node in embedded mode
+./ipfs-publisher --ipfs-mode embedded
+# Expect logs:
+# - "Using embedded IPFS node for PubSub"
+# - NO logs about standalone PubSub node
+
+# Test 3: Subscribe from external IPFS
+ipfs pubsub sub mdn/collections/announce &
+
+# Test 4: Publish from external mode
+./ipfs-publisher --ipfs-mode external --test-pubsub
+# Expect: message received in ipfs subscriber
+
+# Test 5: Cross-mode communication
+# Terminal 1: embedded mode
+./ipfs-publisher --ipfs-mode embedded &
+# Terminal 2: external mode  
+./ipfs-publisher --ipfs-mode external &
+# Both should see each other's announcements in logs
+
+# Test 6: DHT peer discovery
+./ipfs-publisher --ipfs-mode external
+# Wait 2-3 minutes
+# Check logs for DHT bootstrap and peer discovery
+# Expect: "DHT routing table: X peers"
+
+# Test 7: Standalone node resource usage
+./ipfs-publisher --ipfs-mode external
+ps aux | grep ipfs-publisher
+# Monitor memory/CPU
+# Expect: minimal overhead from standalone PubSub (~20-50MB)
+
+# Test 8: Port configuration
+# Change pubsub.standalone.swarm_port in config to 14003
+./ipfs-publisher --ipfs-mode external
+netstat -tuln | grep 14003
+# Expect: port 14003 listening
+
+# Test 9: Bootstrap peer connectivity
+./ipfs-publisher --ipfs-mode external --config custom-bootstrap.yaml
+# Custom config with specific bootstrap peers
+# Expect: connects to specified peers
+
+# Test 10: Graceful shutdown
+./ipfs-publisher --ipfs-mode external
+# Send SIGTERM or Ctrl+C
+# Expect: 
+# - "Shutting down standalone PubSub node..."
+# - Clean DHT provider cleanup
+# - No hanging goroutines
+
+# Test 11: Standalone node restart on failure
+# In external mode, manually kill standalone PubSub process (if detectable)
+# Expect: automatic restart attempt with error logs
+
+# Test 12: Topic subscription verification
+./ipfs-publisher --ipfs-mode external
+# From another terminal:
+ipfs pubsub peers mdn/collections/announce
+# Expect: standalone PubSub node's peer ID in list
+
+# Test 13: Message delivery rate
+# Run both modes, trigger frequent updates
+# Verify both embedded and external modes receive all messages
+# Expect: no message loss, consistent delivery
+
+# Test 14: Bootstrap failure handling
+# Configure invalid bootstrap peers
+./ipfs-publisher --ipfs-mode external
+# Expect: 
+# - Error logs about bootstrap failure
+# - Retry attempts
+# - Application continues (degraded mode)
+
+# Test 15: Same network verification
+# External IPFS node peer ID: ipfs id
+# Standalone PubSub peer ID: from logs
+# Both should discover same DHT peers
+# Expect: overlap in peer lists (use ipfs dht findpeer)
+```
+
+**Readiness criteria:**
+- ✓ Standalone PubSub node starts in external mode only
+- ✓ No standalone node created in embedded mode
+- ✓ Separate peer identity for standalone node
+- ✓ Custom swarm port configurable
+- ✓ Uses same bootstrap peers as IPFS
+- ✓ DHT enabled and functional
+- ✓ Messages published successfully from both modes
+- ✓ Cross-mode message delivery works
+- ✓ Graceful shutdown and cleanup
+- ✓ Minimal resource overhead
+- ✓ Peer discovery functional
+- ✓ Mode switching works correctly
 
 ---
 
@@ -1519,10 +1670,11 @@ sudo systemctl status ipfs-publisher
 - [ ] Embedded IPFS node starts successfully
 - [ ] Port conflict detection works
 - [ ] Embedded node repo persistence
-- [ ] PubSub works in both modes
-- [ ] DHT integration (embedded mode)
+- [ ] PubSub works on embedded IPFS node (embedded mode)
+- [ ] Standalone PubSub node works (external mode)
+- [ ] DHT integration (both modes)
 - [ ] Garbage collection (embedded mode)
-- [ ] Bootstrap peer connectivity
+- [ ] Bootstrap peer connectivity (both IPFS and PubSub)
 
 ### Reliability
 - [ ] Lock file prevents multiple runs
@@ -1570,6 +1722,28 @@ sudo systemctl status ipfs-publisher
 - [ ] Usage examples (both modes)
 - [ ] Deployment guide
 - [ ] Migration guide between modes
+
+---
+
+## 15. IPFS Mode Comparison Table
+
+| Feature | Embedded Mode | External Mode |
+|---------|--------------|---------------|
+| **IPFS Node** | Built-in, full node | External daemon required |
+| **Dependencies** | None | IPFS daemon must be running |
+| **Setup Complexity** | Simple (automatic) | Medium (manual daemon setup) |
+| **Resource Usage** | Higher (~500MB-1GB) | Lower (~200-300MB) |
+| **PubSub Node** | Same as IPFS | Separate standalone node |
+| **Port Requirements** | 3 ports (swarm, API, gateway) + PubSub uses same swarm | External IPFS ports + 1 PubSub port |
+| **DHT Participation** | Full DHT node | External IPFS + standalone PubSub DHT |
+| **Content Availability** | High (own node) | Depends on external node |
+| **Bootstrap** | Automatic | Inherits from external |
+| **Pinning Control** | Full control | Via external node |
+| **Best For** | Production, standalone | Development, testing |
+| **Startup Time** | ~10-30 seconds | Instant (if daemon running) |
+| **Network Identity** | Own peer ID | Uses external + standalone PubSub |
+| **Garbage Collection** | Configurable | External node controls |
+| **failover** | Self-contained | Depends on external daemon |
 
 ---
 
@@ -1622,6 +1796,12 @@ ipfs:
 pubsub:
   topic: "mdn/collections/announce"
   announce_interval: 3600
+  
+  # Standalone PubSub node (used in external mode)
+  standalone:
+    bootstrap_peers: []  # Uses standard IPFS bootstrap
+    swarm_port: 4003
+    enable_dht: true
 
 directories:
   - "/data/media"
@@ -1656,6 +1836,7 @@ ipfs:
 pubsub:
   topic: "production/media/announce"
   announce_interval: 1800  # 30 minutes
+  # No standalone section needed - embedded IPFS handles PubSub
 
 directories:
   - "/mnt/storage/media"

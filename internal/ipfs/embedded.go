@@ -359,6 +359,54 @@ func (c *EmbeddedClient) ResolveIPNS(ctx context.Context, name string) (string, 
 	return resolvedPath, nil
 }
 
+// PublishToPubSub publishes a message to a PubSub topic using the embedded IPFS node's PubSub
+func (c *EmbeddedClient) PublishToPubSub(ctx context.Context, topic string, data []byte) error {
+	if !c.started {
+		return fmt.Errorf("node not started")
+	}
+
+	log := logger.Get()
+
+	// Get topic peers for logging
+	peers, err := c.api.PubSub().Peers(ctx, options.PubSub.Topic(topic))
+	if err == nil {
+		log.Debugf("Publishing to topic %s with %d subscribed peers", topic, len(peers))
+	}
+
+	// Publish to the topic
+	if err := c.api.PubSub().Publish(ctx, topic, data); err != nil {
+		return fmt.Errorf("failed to publish to topic %s: %w", topic, err)
+	}
+
+	log.Debugf("Published %d bytes to topic %s", len(data), topic)
+	return nil
+}
+
+// GetPeerAddresses returns the multiaddresses this node is listening on
+func (c *EmbeddedClient) GetPeerAddresses(ctx context.Context) ([]string, error) {
+	if !c.started {
+		return nil, fmt.Errorf("node not started")
+	}
+
+	peerInfo, err := c.api.Key().Self(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get peer ID: %w", err)
+	}
+
+	addrs, err := c.api.Swarm().ListenAddrs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get listen addresses: %w", err)
+	}
+
+	// Convert to multiaddrs with peer ID
+	var multiaddrs []string
+	for _, addr := range addrs {
+		multiaddrs = append(multiaddrs, fmt.Sprintf("%s/p2p/%s", addr.String(), peerInfo.ID().String()))
+	}
+
+	return multiaddrs, nil
+}
+
 // IsAvailable checks if the embedded node is running
 func (c *EmbeddedClient) IsAvailable(ctx context.Context) error {
 	if !c.started || c.node == nil {

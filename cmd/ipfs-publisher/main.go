@@ -30,16 +30,17 @@ const (
 )
 
 var (
-	configPath  string
-	showVersion bool
-	showHelp    bool
-	initConfig  bool
-	checkIPFS   bool
-	dryRun      bool
-	ipfsMode    string
-	testUpload  string
-	testIPNS    bool
-	testPubSub  bool
+	configPath   string
+	showVersion  bool
+	showHelp     bool
+	initConfig   bool
+	checkIPFS    bool
+	dryRun       bool
+	ipfsMode     string
+	testUpload   string
+	testIPNS     bool
+	testPubSub   bool
+	showPeerInfo bool
 )
 
 func init() {
@@ -53,6 +54,7 @@ func init() {
 	pflag.StringVar(&testUpload, "test-upload", "", "Upload a test file to IPFS and exit")
 	pflag.BoolVar(&testIPNS, "test-ipns", false, "Test IPNS publish and resolve")
 	pflag.BoolVar(&testPubSub, "test-pubsub", false, "Test PubSub announcements")
+	pflag.BoolVar(&showPeerInfo, "peer-info", false, "Show IPFS peer addresses and exit")
 }
 
 func main() {
@@ -96,6 +98,15 @@ func main() {
 			os.Exit(1)
 		}
 		cfg.IPFS.Mode = mode
+	}
+
+	// Handle peer-info flag (must be after config loaded)
+	if showPeerInfo {
+		if err := showNodePeerInfo(cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "Error showing peer info: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
 	}
 
 	// Initialize logger
@@ -196,9 +207,32 @@ func main() {
 	logger.Debugf("Monitoring directories: %v", cfg.Directories)
 	logger.Debugf("File extensions: %v", cfg.Extensions)
 
-	// TODO: Implement main application logic
+	// Start periodic PubSub announcements if enabled
+	if cfg.Pubsub.Enabled {
+		logger.Info("PubSub announcements enabled - starting periodic publisher")
+		logger.Infof("Announcement interval: %v seconds", cfg.Pubsub.AnnounceInterval)
 
-	// Keep application running
+		// Publish initial announcement after a short delay
+		go func() {
+			time.Sleep(5 * time.Second) // Give node time to connect to peers
+			stateManager := state.New(filepath.Join(getBaseDir(), "state.json"))
+			if err := stateManager.Load(); err == nil {
+				ipns := stateManager.GetIPNS()
+				if ipns != "" {
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					if err := publishAnnouncementViaIPFS(ctx, ipfsClient, cfg.Pubsub.Topic, ipns, len(stateManager.GetAllFiles()), stateManager.GetVersion()); err != nil {
+						logger.Warnf("Failed to publish initial announcement: %v", err)
+					} else {
+						logger.Info("✓ Initial announcement published")
+					}
+					cancel()
+				}
+			}
+		}()
+
+		go runPeriodicAnnouncements(cfg, ipfsClient)
+	}
+
 	select {}
 }
 
@@ -276,6 +310,7 @@ ipfs:
 
 # PubSub configuration (always uses embedded implementation)
 pubsub:
+  enabled: true  # Enable PubSub announcements
   topic: "mdn/collections/announce"
   announce_interval: 3600  # seconds (1 hour)
   bootstrap_peers: []
@@ -368,6 +403,57 @@ func createIPFSClient(cfg *config.Config) (ipfs.Client, error) {
 	}
 
 	return nil, fmt.Errorf("invalid IPFS mode: %s", cfg.IPFS.Mode)
+}
+
+// initPubSub initializes PubSub node and publisher
+func initPubSub(cfg *config.Config) (*pubsub.Publisher, error) {
+	log := logger.Get()
+
+	// Create PubSub node config
+	nodeConfig := &pubsub.Config{
+		Topic:          cfg.Pubsub.Topic,
+		ListenPort:     cfg.Pubsub.ListenPort,
+		BootstrapPeers: cfg.Pubsub.BootstrapPeers,
+	}
+
+	node, err := pubsub.NewNode(nodeConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create PubSub node: %w", err)
+	}
+
+	// Start the node
+	if err := node.Start(nodeConfig); err != nil {
+		return nil, fmt.Errorf("failed to start PubSub node: %w", err)
+	}
+
+	// Load or generate keys for message signing
+	keyMgr := keys.New(filepath.Join(getBaseDir(), "keys"))
+	if err := keyMgr.Initialize(); err != nil {
+		node.Stop()
+		return nil, fmt.Errorf("failed to initialize keys: %w", err)
+	}
+
+	privateKey := keyMgr.GetPrivateKey()
+
+	// Create publisher
+	announceInterval := time.Duration(cfg.Pubsub.AnnounceInterval) * time.Second
+	publisherConfig := &pubsub.PublisherConfig{
+		AnnounceInterval: announceInterval,
+	}
+
+	publisher := pubsub.NewPublisher(node, privateKey, publisherConfig)
+
+	// Start periodic announcements
+	if err := publisher.Start(); err != nil {
+		node.Stop()
+		return nil, fmt.Errorf("failed to start publisher: %w", err)
+	}
+
+	log.Infof("PubSub node started on port %d", cfg.Pubsub.ListenPort)
+	log.Infof("Topic: %s", cfg.Pubsub.Topic)
+	log.Infof("Periodic announcements every %v", announceInterval)
+
+	return publisher, nil
 }
 
 // checkIPFSConnection checks if IPFS node is available
@@ -466,6 +552,74 @@ func testFileUpload(client ipfs.Client, filePath string, cfg *config.Config) err
 	}
 
 	return nil
+}
+
+// publishAnnouncementViaIPFS publishes a PubSub announcement via embedded IPFS node's PubSub
+func publishAnnouncementViaIPFS(ctx context.Context, client ipfs.Client, topic string, ipns string, collectionSize int, version int) error {
+	// Only works with embedded IPFS client
+	embeddedClient, ok := client.(*ipfs.EmbeddedClient)
+	if !ok {
+		return fmt.Errorf("PubSub only supported with embedded IPFS mode")
+	}
+
+	// Create announcement message
+	msg := pubsub.NewAnnouncementMessage(version, ipns, collectionSize, time.Now().Unix())
+
+	// Load keys for signing
+	keyMgr := keys.New(filepath.Join(getBaseDir(), "keys"))
+	if err := keyMgr.Initialize(); err != nil {
+		return fmt.Errorf("failed to initialize keys: %w", err)
+	}
+
+	// Sign the message
+	if err := msg.Sign(keyMgr.GetPrivateKey()); err != nil {
+		return fmt.Errorf("failed to sign message: %w", err)
+	}
+
+	// Convert to JSON
+	data, err := msg.ToJSON()
+	if err != nil {
+		return fmt.Errorf("failed to serialize message: %w", err)
+	}
+
+	// Publish via embedded IPFS node's PubSub
+	if err := embeddedClient.PublishToPubSub(ctx, topic, data); err != nil {
+		return fmt.Errorf("failed to publish: %w", err)
+	}
+
+	return nil
+}
+
+// runPeriodicAnnouncements runs periodic PubSub announcements
+func runPeriodicAnnouncements(cfg *config.Config, client ipfs.Client) {
+	log := logger.Get()
+	ticker := time.NewTicker(time.Duration(cfg.Pubsub.AnnounceInterval) * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		// Load current state
+		stateManager := state.New(filepath.Join(getBaseDir(), "state.json"))
+		if err := stateManager.Load(); err != nil {
+			log.Debugf("No state to announce: %v", err)
+			continue
+		}
+
+		ipns := stateManager.GetIPNS()
+		if ipns == "" {
+			log.Debug("No IPNS to announce yet")
+			continue
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := publishAnnouncementViaIPFS(ctx, client, cfg.Pubsub.Topic, ipns, len(stateManager.GetAllFiles()), stateManager.GetVersion())
+		cancel()
+
+		if err != nil {
+			log.Warnf("Failed to publish periodic announcement: %v", err)
+		} else {
+			log.Infof("✓ Periodic announcement published (version %d)", stateManager.GetVersion())
+		}
+	}
 }
 
 // testIPNSOperations tests IPNS publish and resolve
@@ -756,7 +910,9 @@ func runScan(cfg *config.Config, ipfsClient ipfs.Client, dryRun bool) error {
 
 	logger.Infof("Processing complete: %d uploaded, %d skipped, %d errors", processedCount, skippedCount, errorCount)
 
-	// Save index and publish to IPNS if files were processed
+	// Always update IPNS and publish announcements (even if no files changed)
+	// Save and upload index if needed
+	var indexCID string
 	if processedCount > 0 {
 		if err := indexMgr.Save(); err != nil {
 			return fmt.Errorf("failed to save index: %w", err)
@@ -779,42 +935,148 @@ func runScan(cfg *config.Config, ipfsClient ipfs.Client, dryRun bool) error {
 		}
 
 		logger.Infof("Index uploaded to IPFS: %s", indexResult.CID)
+		indexCID = indexResult.CID
 		stateManager.SetLastIndexCID(indexResult.CID)
 		stateManager.IncrementVersion()
-
-		// Initialize key manager
-		keyMgr := keys.New(filepath.Join(getBaseDir(), "keys"))
-		if err := keyMgr.Initialize(); err != nil {
-			return fmt.Errorf("failed to initialize keys: %w", err)
+	} else {
+		// No changes, use existing index CID
+		indexCID = stateManager.GetLastIndexCID()
+		if indexCID == "" {
+			logger.Warn("No index CID available, skipping IPNS update")
+			return nil
 		}
+		logger.Infof("No file changes, using existing index CID: %s", indexCID)
+	}
 
-		// Publish to IPNS (with short timeout to avoid hanging)
-		// Note: IPNS publishing may timeout if there are no DHT peers available
-		logger.Info("Publishing to IPNS...")
-		ipnsCtx, ipnsCancel := context.WithTimeout(ctx, 10*time.Second)
-		defer ipnsCancel()
+	// Initialize key manager
+	keyMgr := keys.New(filepath.Join(getBaseDir(), "keys"))
+	if err := keyMgr.Initialize(); err != nil {
+		return fmt.Errorf("failed to initialize keys: %w", err)
+	}
 
-		ipnsResult, err := ipfsClient.PublishIPNS(ipnsCtx, indexResult.CID, ipfs.IPNSPublishOptions{
+	// Publish to IPNS (with longer timeout for DHT propagation)
+	logger.Info("Publishing to IPNS...")
+	ipnsCtx, ipnsCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer ipnsCancel()
+
+	ipnsResult, err := ipfsClient.PublishIPNS(ipnsCtx, indexCID, ipfs.IPNSPublishOptions{
+		Key:          "self",
+		Lifetime:     "24h",
+		TTL:          "1h",
+		AllowOffline: false, // Try to publish to DHT
+	})
+	if err != nil {
+		logger.Errorf("Failed to publish IPNS: %v", err)
+		logger.Info("   Retrying with offline mode...")
+
+		// Retry with offline mode
+		ipnsCtx2, ipnsCancel2 := context.WithTimeout(ctx, 10*time.Second)
+		defer ipnsCancel2()
+
+		ipnsResult, err = ipfsClient.PublishIPNS(ipnsCtx2, indexCID, ipfs.IPNSPublishOptions{
 			Key:          "self",
 			Lifetime:     "24h",
 			TTL:          "1h",
-			AllowOffline: true, // Allow local-only IPNS (no DHT required)
+			AllowOffline: true,
 		})
 		if err != nil {
-			logger.Warnf("Failed to publish IPNS (this is expected without DHT peers): %v", err)
-			logger.Info("   IPNS keys are ready for future publishing when network is available")
-			// Don't fail the entire operation if IPNS fails
-		} else {
-			logger.Infof("✓ Published to IPNS: %s", ipnsResult.Name)
-			logger.Infof("   Points to: %s", ipnsResult.Value)
-			stateManager.SetIPNS(ipnsResult.Name)
+			logger.Errorf("Failed to publish IPNS even in offline mode: %v", err)
+			logger.Warn("   Skipping IPNS and PubSub announcement")
+			return nil
 		}
+	}
 
-		// Save state
-		if err := stateManager.Save(); err != nil {
-			return fmt.Errorf("failed to save state: %w", err)
+	logger.Infof("✓ Published to IPNS: %s", ipnsResult.Name)
+	logger.Infof("   Points to: %s", ipnsResult.Value)
+	stateManager.SetIPNS(ipnsResult.Name)
+
+	// Note: PubSub announcement will be published by the periodic announcer
+	// The periodic goroutine will pick up the new IPNS and announce it
+
+	// Save state
+	if err := stateManager.Save(); err != nil {
+		return fmt.Errorf("failed to save state: %w", err)
+	}
+	logger.Info("State saved")
+
+	return nil
+}
+
+// showNodePeerInfo displays the peer addresses for the IPFS node
+func showNodePeerInfo(cfg *config.Config) error {
+	ctx := context.Background()
+
+	// Initialize IPFS client
+	ipfsClient, err := createIPFSClient(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to initialize IPFS client: %w", err)
+	}
+	defer ipfsClient.Close()
+
+	fmt.Println("IPFS Node Information:")
+	fmt.Printf("Mode: %s\n\n", cfg.IPFS.Mode)
+
+	// For external node
+	if cfg.IPFS.Mode == config.IPFSModeExternal {
+		if extClient, ok := ipfsClient.(*ipfs.ExternalClient); ok {
+			peerID, err := extClient.GetID()
+			if err != nil {
+				return fmt.Errorf("failed to get peer ID: %w", err)
+			}
+			fmt.Printf("Peer ID: %s\n", peerID)
+			fmt.Printf("API URL: %s\n", cfg.IPFS.External.APIURL)
 		}
-		logger.Info("State saved")
+		return nil
+	}
+
+	// For embedded node, show listen addresses
+	if cfg.IPFS.Mode == config.IPFSModeEmbedded {
+		if embeddedClient, ok := ipfsClient.(*ipfs.EmbeddedClient); ok {
+			// Get peer addresses
+			addrs, err := embeddedClient.GetPeerAddresses(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to get peer addresses: %w", err)
+			}
+
+			// Extract peer ID from first address
+			var peerID string
+			if len(addrs) > 0 {
+				parts := strings.Split(addrs[0], "/p2p/")
+				if len(parts) == 2 {
+					peerID = parts[1]
+					fmt.Printf("Peer ID: %s\n\n", peerID)
+				}
+			}
+
+			fmt.Println("Listen addresses:")
+			for _, addr := range addrs {
+				fmt.Printf("  %s\n", addr)
+			}
+
+			if len(addrs) > 0 {
+				fmt.Println("\n=== To receive PubSub messages from this node ===")
+				fmt.Println("Run this command from your external IPFS node:")
+
+				// Show the first TCP address (usually most useful)
+				for _, addr := range addrs {
+					if strings.Contains(addr, "/tcp/") && !strings.Contains(addr, "/127.0.0.1/") {
+						fmt.Printf("\n  ipfs swarm connect %s\n", addr)
+						break
+					}
+				}
+
+				// Also show localhost address
+				for _, addr := range addrs {
+					if strings.Contains(addr, "/tcp/") && strings.Contains(addr, "/127.0.0.1/") {
+						fmt.Printf("\n  # Or if on the same machine:\n  ipfs swarm connect %s\n", addr)
+						break
+					}
+				}
+
+				fmt.Println("\nAfter connecting, subscribe to announcements:")
+				fmt.Printf("  ipfs pubsub sub %s\n", cfg.Pubsub.Topic)
+			}
+		}
 	}
 
 	return nil

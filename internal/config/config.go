@@ -51,6 +51,7 @@ type IPFSConfig struct {
 
 // PubsubConfig contains Pubsub-related configuration
 type PubsubConfig struct {
+	Enabled          bool     `mapstructure:"enabled"`
 	Topic            string   `mapstructure:"topic"`
 	AnnounceInterval int      `mapstructure:"announce_interval"`
 	BootstrapPeers   []string `mapstructure:"bootstrap_peers"`

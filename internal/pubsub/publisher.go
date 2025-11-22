@@ -67,7 +67,8 @@ func (p *Publisher) announceLoop() {
 		select {
 		case <-p.ticker.C:
 			p.mu.RLock()
-			if p.currentIPNS != "" {
+			// Announce if we have either IPNS or just a version/collection
+			if p.currentIPNS != "" || p.currentVersion > 0 {
 				log.Debug("Periodic announcement triggered")
 				if err := p.publishCurrent(); err != nil {
 					log.Errorf("Failed to publish periodic announcement: %v", err)
@@ -110,8 +111,12 @@ func (p *Publisher) publishCurrent() error {
 
 // publishCurrentLocked publishes without locking (caller must hold lock)
 func (p *Publisher) publishCurrentLocked() error {
+	// Require IPNS before publishing
+	if p.currentVersion == 0 {
+		return fmt.Errorf("no announcement to publish (version 0)")
+	}
 	if p.currentIPNS == "" {
-		return fmt.Errorf("no announcement to publish")
+		return fmt.Errorf("no IPNS to publish")
 	}
 
 	log := logger.Get()
