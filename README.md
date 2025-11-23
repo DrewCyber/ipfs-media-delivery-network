@@ -4,7 +4,7 @@ A Go application for automatic publishing of media collections to IPFS with anno
 
 ## Features
 
-### Current (Phase 1-7 Complete)
+### Current (Phase 1-8 Complete)
 
 - ✅ **Configuration Management** - YAML-based configuration with validation
 - ✅ **IPFS Integration** - External IPFS node support via HTTP API
@@ -18,6 +18,11 @@ A Go application for automatic publishing of media collections to IPFS with anno
 - ✅ **Directory Scanning** - Recursive scanning with extension filtering
 - ✅ **NDJSON Index** - Media collection index with sequential IDs
 - ✅ **State Management** - Persistent state with change detection
+- ✅ **Real-time Monitoring** - Automatic file change detection with fsnotify
+- ✅ **Incremental Updates** - Only process changed/new files
+- ✅ **Debouncing** - 300ms debounce for rapid file changes
+- ✅ **Automatic Sync** - Index and IPNS automatically updated on file changes
+- ✅ **Periodic State Saving** - State persisted every 60 seconds
 - ✅ **Progress Bar** - Visual feedback for batch uploads
 - ✅ **IPNS Key Management** - Ed25519 keypair generation and secure storage
 - ✅ **PubSub Integration** - Announcements after IPNS updates
@@ -28,9 +33,9 @@ A Go application for automatic publishing of media collections to IPFS with anno
 
 ### Coming Soon
 
-- 🔄 Real-time directory monitoring with fsnotify
-- 🔄 Automatic re-scan on file changes
-- 🔄 File change detection and incremental updates
+- 🔄 Web UI for monitoring
+- 🔄 Multiple IPNS keys (per-directory)
+- 🔄 File metadata (tags, descriptions)
 
 ## Installation
 
@@ -117,6 +122,36 @@ Expected output:
   CID: QmXxx...
   Pinned: true
 ```
+
+### 5. Run Publisher
+
+```bash
+./ipfs-publisher
+```
+
+The application will:
+1. Perform initial scan and upload all files
+2. Create NDJSON index
+3. Publish to IPNS
+4. Start real-time monitoring
+5. Automatically process new/changed files
+6. Keep running indefinitely
+
+**Real-Time Monitoring:**
+- Watches all configured directories recursively
+- Detects new files, modifications, and deletions
+- Debounces rapid changes (300ms delay)
+- Updates index and IPNS automatically
+- Publishes PubSub announcements
+- Saves state every 60 seconds
+
+**File Processing:**
+- **New file**: Upload to IPFS, add to index, update IPNS
+- **Modified file**: Re-upload, update CID in index, update IPNS  
+- **Deleted file**: Remove from index, update IPNS
+- **Unchanged file**: Skip (based on mtime and size comparison)
+
+Stop the application with `Ctrl+C` (graceful shutdown).
 
 ## Usage
 

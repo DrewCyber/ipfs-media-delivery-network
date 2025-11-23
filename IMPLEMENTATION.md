@@ -2,7 +2,7 @@
 
 A Go application for automatic publishing of media collections to IPFS with announcement via Pubsub.
 
-## Current Status: Phase 7 Complete ✓
+## Current Status: Phase 8 Complete ✓
 
 ### Implemented Features
 
@@ -38,7 +38,7 @@ A Go application for automatic publishing of media collections to IPFS with anno
 **Phase 4: PubSub announcements** ✅
 - ✅ PubSub message format with version, IPNS, collection size, timestamp
 - ✅ Ed25519 message signing and verification
-- ✅ Standalone libp2p PubSub node (separate from IPFS node)
+- ✅ Standalone libp2p PubSub node (for external IPFS mode)
 - ✅ GossipSub protocol implementation
 - ✅ DHT integration for peer discovery
 - ✅ Bootstrap peer connection (uses default IPFS bootstrap peers)
@@ -51,7 +51,7 @@ A Go application for automatic publishing of media collections to IPFS with anno
 - ✅ Recursive directory scanner with extension filtering
 - ✅ Hidden file and temporary file filtering
 - ✅ NDJSON index format implementation
-- ✅ Index manager with Add/Update/Get operations
+- ✅ Index manager with Add/Update/Delete operations
 - ✅ State manager with JSON persistence
 - ✅ File state tracking (CID, mtime, size, indexID)
 - ✅ Incremental uploads (skip unchanged files)
@@ -71,7 +71,10 @@ A Go application for automatic publishing of media collections to IPFS with anno
 - ✅ IPNS name stored in state
 - ✅ Keys directory at ~/.ipfs_publisher/keys/
 
-**Phase 7: PubSub integration and workflow** ✅
+**Phase 7: Complete PubSub integration** ✅
+- ✅ Mode-aware PubSub implementation:
+  - **Embedded mode**: Uses embedded IPFS node's PubSub (same libp2p instance)
+  - **External mode**: Standalone lightweight libp2p PubSub node
 - ✅ PubSub node initialization in main application
 - ✅ Integration with IPNS publishing workflow
 - ✅ Automatic PubSub announcement after successful IPNS publish
@@ -81,6 +84,24 @@ A Go application for automatic publishing of media collections to IPFS with anno
 - ✅ Graceful error handling for PubSub failures
 - ✅ Application keeps running for periodic announcements
 - ✅ PubSub can be enabled/disabled via config
+- ✅ --peer-info command for connection details
+
+**Phase 8: File watcher and state management** ✅
+- ✅ fsnotify integration for real-time file monitoring
+- ✅ Recursive directory watching (including subdirectories)
+- ✅ Event handling for create/modify/delete/rename
+- ✅ 300ms debouncing for rapid file changes
+- ✅ Extension filtering for watched events
+- ✅ Hidden file and temporary file filtering
+- ✅ Change detection (mtime and size comparison)
+- ✅ Incremental file processing on changes
+- ✅ Automatic index updates on file changes
+- ✅ Automatic IPNS republishing on changes
+- ✅ Automatic PubSub announcements on changes
+- ✅ Periodic state saving (every 60 seconds)
+- ✅ State recovery after crashes
+- ✅ New directory detection and automatic watching
+- ✅ Graceful watcher shutdown
 
 ### Project Structure
 
@@ -97,6 +118,8 @@ ipfs-media-delivery-network/
 │   │   ├── external.go       # External IPFS HTTP API client
 │   │   ├── embedded.go       # Embedded IPFS node implementation (kubo v0.38.2)
 │   │   └── repo.go           # Repository initialization and management
+│   ├── watcher/
+│   │   └── watcher.go        # File system watcher with fsnotify
 │   ├── pubsub/
 │   │   ├── message.go        # PubSub message format with signing/verification
 │   │   ├── node.go           # Standalone libp2p PubSub node
@@ -660,14 +683,212 @@ PubSub implementation uses a standalone libp2p node (separate from IPFS node):
 - **Change detection**: Compare mtime and size to detect modifications
 - **Atomic writes**: Temp file + rename pattern
 - **Recovery**: Load on startup, continue from last state
+- **Periodic saves**: State saved every 60 seconds (configurable)
+
+#### Real-Time File Monitoring (Phase 8)
+- **fsnotify integration**: OS-level file system event notifications
+- **Recursive watching**: Monitors all subdirectories automatically
+- **New directory detection**: Automatically adds new directories to watch list
+- **Event types**: CREATE, MODIFY, DELETE, RENAME
+- **Debouncing**: 300ms delay to handle rapid file changes
+  - Multiple writes to same file within 300ms → single event
+  - Prevents duplicate uploads during file transfers
+- **Extension filtering**: Only processes files with configured extensions
+- **Hidden file filtering**: Ignores files starting with `.` or ending with `~`
+- **Change detection**: Compares mtime and size before reprocessing
+- **Incremental updates**: Only processes changed/new files
+- **Automatic index updates**: Index rebuilt and uploaded on every change
+- **Automatic IPNS publishing**: IPNS republished after index updates
+- **Automatic PubSub**: Announcements sent on every collection change
+- **Version tracking**: Version incremented only on actual changes
+- **Graceful shutdown**: Cleans up watchers and saves final state
+
+#### File Processing Flow (Phase 8)
+```
+File Event (fsnotify)
+    ↓
+Debouncer (300ms)
+    ↓
+Event Type Check
+    ↓
+├─ CREATE/MODIFY
+│   ↓
+│   Check mtime/size vs state
+│   ↓
+│   Upload to IPFS
+│   ↓
+│   Update index
+│   ↓
+│   Upload index to IPFS
+│   ↓
+│   Publish IPNS
+│   ↓
+│   Send PubSub announcement
+│   ↓
+│   Save state
+│
+└─ DELETE
+    ↓
+    Remove from index
+    ↓
+    Upload index to IPFS
+    ↓
+    Publish IPNS
+    ↓
+    Send PubSub announcement
+    ↓
+    Save state
+```
+
+## Phase 8 Test Results (23 Nov 2025)
+
+1. ✅ **fsnotify integration**: File watcher starts successfully
+   ```bash
+   ./ipfs-publisher
+   # Started watching: /Users/atregu/test-media
+   # Watching directory: /Users/atregu/test-media
+   # Watching directory: /Users/atregu/test-media/subdir
+   # ✓ Real-time file monitoring started
+   ```
+
+2. ✅ **New file detection**: Automatically uploads new files
+   ```bash
+   # In another terminal:
+   cp newfile.mp3 ~/test-media/
+   
+   # Application logs:
+   # File event: CREATE /Users/atregu/test-media/newfile.mp3
+   # Processing file event: CREATE /Users/atregu/test-media/newfile.mp3
+   # Uploading: newfile.mp3
+   #    ✓ CID: QmXxx...
+   # Index uploaded to IPFS: QmYyy...
+   # Publishing to IPNS...
+   # ✓ Published to IPNS: k51qzi5uqu5d...
+   # ✓ File processed successfully: newfile.mp3
+   ```
+
+3. ✅ **File modification detection**: Re-uploads modified files
+   ```bash
+   # Modify existing file:
+   echo "new data" >> ~/test-media/existing.mp3
+   
+   # Application logs:
+   # File event: MODIFY /Users/atregu/test-media/existing.mp3
+   # Processing file event: MODIFY /Users/atregu/test-media/existing.mp3
+   # Uploading: existing.mp3
+   #    ✓ CID: QmZzz... (new CID)
+   # Index uploaded to IPFS: QmAAA...
+   # ✓ Published to IPNS: k51qzi5uqu5d...
+   # ✓ File processed successfully: existing.mp3
+   ```
+
+4. ✅ **File deletion handling**: Removes from index
+   ```bash
+   rm ~/test-media/oldfile.mp3
+   
+   # Application logs:
+   # File event: DELETE /Users/atregu/test-media/oldfile.mp3
+   # Processing file event: DELETE /Users/atregu/test-media/oldfile.mp3
+   # Index uploaded to IPFS: QmBBB...
+   # ✓ Published to IPNS: k51qzi5uqu5d...
+   # ✓ File removed from collection: oldfile.mp3
+   ```
+
+5. ✅ **Debouncing**: Rapid changes trigger single event
+   ```bash
+   # Rapidly write to file multiple times:
+   for i in {1..10}; do echo "line $i" >> ~/test-media/test.mp3; sleep 0.05; done
+   
+   # Application logs show only one event after 300ms
+   # File event: MODIFY /Users/atregu/test-media/test.mp3
+   # Processing file event: MODIFY /Users/atregu/test-media/test.mp3
+   # (Only one upload, not 10)
+   ```
+
+6. ✅ **New directory detection**: Automatically watches new subdirectories
+   ```bash
+   mkdir ~/test-media/new-subdir
+   
+   # Application logs:
+   # Started watching new directory: /Users/atregu/test-media/new-subdir
+   
+   # Add file to new directory:
+   cp file.mp3 ~/test-media/new-subdir/
+   # File event: CREATE /Users/atregu/test-media/new-subdir/file.mp3
+   # (Automatically processed)
+   ```
+
+7. ✅ **Change detection**: Skips unchanged files
+   ```bash
+   # Touch file without changing content:
+   touch -m ~/test-media/file.mp3
+   
+   # Application logs:
+   # File event: MODIFY /Users/atregu/test-media/file.mp3
+   # File unchanged, skipping: /Users/atregu/test-media/file.mp3
+   # (No upload, no index update)
+   ```
+
+8. ✅ **Periodic state saving**: State saved every 60 seconds
+   ```bash
+   # Application logs every 60 seconds:
+   # State saved automatically
+   
+   # Verify state file updated:
+   stat ~/.ipfs_publisher/state.json
+   # Shows recent modification time
+   ```
+
+9. ✅ **Extension filtering**: Only configured extensions processed
+   ```bash
+   cp file.txt ~/test-media/
+   # No event logged (not in extensions list)
+   
+   cp file.mp3 ~/test-media/
+   # File event: CREATE /Users/atregu/test-media/file.mp3
+   # (Processed normally)
+   ```
+
+10. ✅ **Hidden file filtering**: Hidden files ignored
+    ```bash
+    cp file.mp3 ~/test-media/.hidden.mp3
+    # No event (hidden file)
+    
+    cp file.mp3~ ~/test-media/
+    # No event (temporary file)
+    ```
+
+11. ✅ **Graceful shutdown**: Watcher stops cleanly
+    ```bash
+    # Press Ctrl+C
+    # Received signal: interrupt
+    # Shutting down gracefully...
+    # Stopping file watcher...
+    # File watcher stopped
+    # Lock released successfully
+    # (Clean exit)
+    ```
+
+12. ✅ **State recovery**: Continues from last state after restart
+    ```bash
+    # Kill application
+    pkill ipfs-publisher
+    
+    # Restart:
+    ./ipfs-publisher
+    # Loaded state: version=5, files=10
+    # (Continues with version 5, doesn't re-upload existing files)
+    ```
 
 ### Directory Structure
 
 - Application data: `~/.ipfs_publisher/`
 - Logs: `~/.ipfs_publisher/logs/app.log`
 - Lock file: `~/.ipfs_publisher/.ipfs_publisher.lock`
-- Keys (future): `~/.ipfs_publisher/keys/`
-- State (future): `~/.ipfs_publisher/state.json`
+- Keys: `~/.ipfs_publisher/keys/` (private.key, public.key)
+- State: `~/.ipfs_publisher/state.json`
+- Index: `~/.ipfs_publisher/collection.ndjson`
+- Embedded IPFS repo: `~/.ipfs_publisher/ipfs-repo/` (embedded mode only)
 
 ## License
 

@@ -21,6 +21,7 @@ import (
 	"github.com/atregu/ipfs-publisher/internal/pubsub"
 	"github.com/atregu/ipfs-publisher/internal/scanner"
 	"github.com/atregu/ipfs-publisher/internal/state"
+	"github.com/atregu/ipfs-publisher/internal/watcher"
 	progressbar "github.com/schollz/progressbar/v3"
 	"github.com/spf13/pflag"
 )
@@ -206,6 +207,45 @@ func main() {
 	logger.Info("Application started successfully")
 	logger.Debugf("Monitoring directories: %v", cfg.Directories)
 	logger.Debugf("File extensions: %v", cfg.Extensions)
+
+	// Initialize state manager for long-running operation
+	stateManager := state.New(filepath.Join(getBaseDir(), "state.json"))
+	if err := stateManager.Load(); err != nil {
+		logger.Warnf("Failed to load state: %v", err)
+	}
+
+	// Initialize index manager for incremental updates
+	indexPath := filepath.Join(getBaseDir(), "collection.ndjson")
+	indexMgr := index.New(indexPath)
+	if err := indexMgr.Load(); err != nil {
+		logger.Warnf("Failed to load index: %v", err)
+	}
+
+	// Start file watcher for real-time monitoring
+	watcherCfg := &watcher.Config{
+		Directories:    cfg.Directories,
+		Extensions:     cfg.Extensions,
+		DebounceDelay:  300 * time.Millisecond,
+		EventQueueSize: 100,
+	}
+
+	fileWatcher, err := watcher.NewWatcher(watcherCfg)
+	if err != nil {
+		logger.Fatalf("Failed to create file watcher: %v", err)
+	}
+
+	if err := fileWatcher.Start(cfg.Directories); err != nil {
+		logger.Fatalf("Failed to start file watcher: %v", err)
+	}
+	defer fileWatcher.Stop()
+
+	logger.Info("✓ Real-time file monitoring started")
+
+	// Start periodic state saver
+	go runPeriodicStateSaver(cfg, stateManager)
+
+	// Start file event processor
+	go processFileEvents(cfg, ipfsClient, fileWatcher, stateManager, indexMgr)
 
 	// Start periodic PubSub announcements if enabled
 	if cfg.Pubsub.Enabled {
@@ -871,6 +911,246 @@ func testPubSubOperations(cfg *config.Config) error {
 	logger.Infof("   Timestamp: %d", msg.Timestamp)
 
 	logger.Info("✓ PubSub test successful!")
+	return nil
+}
+
+// runPeriodicStateSaver saves state periodically
+func runPeriodicStateSaver(cfg *config.Config, stateManager *state.Manager) {
+	log := logger.Get()
+	interval := time.Duration(cfg.Behavior.StateSaveInterval) * time.Second
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	log.Infof("Periodic state saver started (interval: %v seconds)", cfg.Behavior.StateSaveInterval)
+
+	for range ticker.C {
+		if err := stateManager.Save(); err != nil {
+			log.Errorf("Failed to save state: %v", err)
+		} else {
+			log.Debug("State saved automatically")
+		}
+	}
+}
+
+// processFileEvents handles file system events from watcher
+func processFileEvents(cfg *config.Config, ipfsClient ipfs.Client, fw *watcher.Watcher, stateManager *state.Manager, indexMgr *index.Manager) {
+	log := logger.Get()
+	ctx := context.Background()
+
+	log.Info("File event processor started")
+
+	for event := range fw.Events() {
+		log.Infof("Processing file event: %s %s", event.EventType, event.Path)
+
+		switch event.EventType {
+		case watcher.EventCreate, watcher.EventModify:
+			// Get file info
+			info, err := os.Stat(event.Path)
+			if err != nil {
+				log.Warnf("Failed to stat file %s: %v", event.Path, err)
+				continue
+			}
+
+			// Check if file needs processing (compare with state)
+			fileState, exists := stateManager.GetFile(event.Path)
+			if exists && fileState.ModTime == info.ModTime().Unix() && fileState.Size == info.Size() {
+				log.Debugf("File unchanged, skipping: %s", event.Path)
+				continue
+			}
+
+			// Process the file
+			if err := processFile(ctx, cfg, ipfsClient, event.Path, info, stateManager, indexMgr); err != nil {
+				log.Errorf("Failed to process file %s: %v", event.Path, err)
+				continue
+			}
+
+			// Save state after successful processing
+			if err := stateManager.Save(); err != nil {
+				log.Errorf("Failed to save state: %v", err)
+			}
+
+			log.Infof("✓ File processed successfully: %s", filepath.Base(event.Path))
+
+		case watcher.EventDelete:
+			// Remove from index and state
+			_, exists := stateManager.GetFile(event.Path)
+			if !exists {
+				log.Debugf("File not in state, ignoring delete: %s", event.Path)
+				continue
+			}
+
+			// Remove from index
+			filename := filepath.Base(event.Path)
+			if err := indexMgr.Delete(filename); err != nil {
+				log.Warnf("Failed to remove from index: %v", err)
+			}
+
+			// Remove from state
+			stateManager.DeleteFile(event.Path)
+
+			// Save updates
+			if err := indexMgr.Save(); err != nil {
+				log.Errorf("Failed to save index: %v", err)
+			}
+			if err := stateManager.Save(); err != nil {
+				log.Errorf("Failed to save state: %v", err)
+			}
+
+			// Upload new index and update IPNS
+			stateManager.IncrementVersion()
+			if err := uploadIndexAndPublishIPNS(ctx, cfg, ipfsClient, indexMgr, stateManager); err != nil {
+				log.Errorf("Failed to update IPNS after deletion: %v", err)
+			}
+
+			log.Infof("✓ File removed from collection: %s", filepath.Base(event.Path))
+		}
+	}
+}
+
+// processFile processes a single file (upload to IPFS and update index)
+func processFile(ctx context.Context, cfg *config.Config, ipfsClient ipfs.Client, filePath string, info os.FileInfo, stateManager *state.Manager, indexMgr *index.Manager) error {
+	log := logger.Get()
+
+	filename := filepath.Base(filePath)
+	extension := strings.TrimPrefix(filepath.Ext(filePath), ".")
+
+	log.Infof("Uploading: %s", filename)
+
+	// Open file
+	f, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+	defer f.Close()
+
+	// Determine add options based on mode
+	addOpts := ipfs.AddOptions{
+		Pin:       true,
+		RawLeaves: true,
+	}
+
+	if cfg.IPFS.Mode == config.IPFSModeExternal {
+		if pin, ok := cfg.IPFS.External.Options["pin"].(bool); ok {
+			addOpts.Pin = pin
+		}
+		if rawLeaves, ok := cfg.IPFS.External.Options["raw_leaves"].(bool); ok {
+			addOpts.RawLeaves = rawLeaves
+		}
+		if chunker, ok := cfg.IPFS.External.Options["chunker"].(string); ok {
+			addOpts.Chunker = chunker
+		}
+	} else {
+		if pin, ok := cfg.IPFS.Embedded.Options["pin"].(bool); ok {
+			addOpts.Pin = pin
+		}
+		if rawLeaves, ok := cfg.IPFS.Embedded.Options["raw_leaves"].(bool); ok {
+			addOpts.RawLeaves = rawLeaves
+		}
+		if chunker, ok := cfg.IPFS.Embedded.Options["chunker"].(string); ok {
+			addOpts.Chunker = chunker
+		}
+	}
+
+	// Upload to IPFS
+	result, err := ipfsClient.Add(ctx, f, filename, addOpts)
+	if err != nil {
+		return fmt.Errorf("failed to upload: %w", err)
+	}
+
+	log.Infof("   ✓ CID: %s", result.CID)
+
+	// Update index
+	fileState, exists := stateManager.GetFile(filePath)
+	if exists {
+		// File already in index, update CID
+		indexMgr.Update(filename, result.CID)
+	} else {
+		// New file, add to index
+		record := indexMgr.Add(filename, result.CID, extension)
+		fileState = &state.FileState{
+			IndexID: record.ID,
+		}
+	}
+
+	// Update state
+	fileState.CID = result.CID
+	fileState.ModTime = info.ModTime().Unix()
+	fileState.Size = info.Size()
+	stateManager.SetFile(filePath, fileState)
+
+	// Save index
+	if err := indexMgr.Save(); err != nil {
+		return fmt.Errorf("failed to save index: %w", err)
+	}
+
+	// Upload index and publish IPNS
+	stateManager.IncrementVersion()
+	if err := uploadIndexAndPublishIPNS(ctx, cfg, ipfsClient, indexMgr, stateManager); err != nil {
+		return fmt.Errorf("failed to publish updates: %w", err)
+	}
+
+	return nil
+}
+
+// uploadIndexAndPublishIPNS uploads index to IPFS and publishes via IPNS
+func uploadIndexAndPublishIPNS(ctx context.Context, cfg *config.Config, ipfsClient ipfs.Client, indexMgr *index.Manager, stateManager *state.Manager) error {
+	log := logger.Get()
+
+	// Upload index to IPFS
+	indexFile, err := os.Open(indexMgr.GetPath())
+	if err != nil {
+		return fmt.Errorf("failed to open index file: %w", err)
+	}
+	defer indexFile.Close()
+
+	indexResult, err := ipfsClient.Add(ctx, indexFile, "collection.ndjson", ipfs.AddOptions{
+		Pin: true,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to upload index: %w", err)
+	}
+
+	log.Infof("Index uploaded to IPFS: %s", indexResult.CID)
+	stateManager.SetLastIndexCID(indexResult.CID)
+
+	// Publish to IPNS
+	log.Info("Publishing to IPNS...")
+	ipnsCtx, ipnsCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer ipnsCancel()
+
+	ipnsResult, err := ipfsClient.PublishIPNS(ipnsCtx, indexResult.CID, ipfs.IPNSPublishOptions{
+		Key:          "self",
+		Lifetime:     "24h",
+		TTL:          "1h",
+		AllowOffline: false,
+	})
+	if err != nil {
+		log.Warnf("Failed to publish IPNS: %v", err)
+		log.Info("   Retrying with offline mode...")
+
+		// Retry with offline mode
+		ipnsCtx2, ipnsCancel2 := context.WithTimeout(ctx, 10*time.Second)
+		defer ipnsCancel2()
+
+		ipnsResult, err = ipfsClient.PublishIPNS(ipnsCtx2, indexResult.CID, ipfs.IPNSPublishOptions{
+			Key:          "self",
+			Lifetime:     "24h",
+			TTL:          "1h",
+			AllowOffline: true,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to publish IPNS (offline mode): %w", err)
+		}
+	}
+
+	log.Infof("✓ Published to IPNS: %s", ipnsResult.Name)
+	stateManager.SetIPNS(ipnsResult.Name)
+
+	// Save state with new IPNS
+	if err := stateManager.Save(); err != nil {
+		log.Warnf("Failed to save state: %v", err)
+	}
+
 	return nil
 }
 

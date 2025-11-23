@@ -168,6 +168,16 @@ func (m *Manager) Update(filename, cid string) (*Record, error) {
 	return record, nil
 }
 
+// Delete removes a record by filename
+func (m *Manager) Delete(filename string) error {
+	if _, exists := m.records[filename]; !exists {
+		return fmt.Errorf("record not found: %s", filename)
+	}
+
+	delete(m.records, filename)
+	return nil
+}
+
 // Get retrieves a record by filename
 func (m *Manager) Get(filename string) (*Record, bool) {
 	record, exists := m.records[filename]
