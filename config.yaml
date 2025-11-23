@@ -22,6 +22,8 @@ ipfs:
     api_port: 5002
     gateway_port: 8081
     add_options:
+      nocopy: true  # Use filestore to reference files without copying (saves disk space)
+                    # NOTE: Files must be inside repo_path or its subdirectories for filestore to work
       pin: true
       chunker: "size-262144"
       raw_leaves: true
@@ -41,7 +43,8 @@ pubsub:
 
 # Directories to monitor
 directories:
-  - "~/test-media"
+  # - "./test-media"
+  - "~/.ipfs_publisher/media"  # For nocopy mode, directories must be inside or symlinked to repo_path
 
 # File extensions to process (case-insensitive)
 extensions:

@@ -604,13 +604,33 @@ func testFileUpload(client ipfs.Client, filePath string, cfg *config.Config) err
 		if val, ok := cfg.IPFS.External.Options["raw_leaves"].(bool); ok {
 			addOpts.RawLeaves = val
 		}
+	} else {
+		// Embedded mode options
+		if val, ok := cfg.IPFS.Embedded.Options["pin"].(bool); ok {
+			addOpts.Pin = val
+		}
+		if val, ok := cfg.IPFS.Embedded.Options["nocopy"].(bool); ok {
+			addOpts.NoCopy = val
+		}
+		if val, ok := cfg.IPFS.Embedded.Options["chunker"].(string); ok {
+			addOpts.Chunker = val
+		}
+		if val, ok := cfg.IPFS.Embedded.Options["raw_leaves"].(bool); ok {
+			addOpts.RawLeaves = val
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
+	// For nocopy, pass full path; otherwise just basename
+	filename := filepath.Base(filePath)
+	if addOpts.NoCopy {
+		filename = filePath
+	}
+
 	logger.Info("Uploading to IPFS...")
-	result, err := client.Add(ctx, file, filepath.Base(filePath), addOpts)
+	result, err := client.Add(ctx, file, filename, addOpts)
 	if err != nil {
 		return fmt.Errorf("failed to add file to IPFS: %w", err)
 	}
@@ -1043,6 +1063,9 @@ func processFile(ctx context.Context, cfg *config.Config, ipfsClient ipfs.Client
 		if pin, ok := cfg.IPFS.Embedded.Options["pin"].(bool); ok {
 			addOpts.Pin = pin
 		}
+		if nocopy, ok := cfg.IPFS.Embedded.Options["nocopy"].(bool); ok {
+			addOpts.NoCopy = nocopy
+		}
 		if rawLeaves, ok := cfg.IPFS.Embedded.Options["raw_leaves"].(bool); ok {
 			addOpts.RawLeaves = rawLeaves
 		}
@@ -1051,8 +1074,14 @@ func processFile(ctx context.Context, cfg *config.Config, ipfsClient ipfs.Client
 		}
 	}
 
+	// For nocopy, pass full path; otherwise just basename
+	uploadFilename := filename
+	if addOpts.NoCopy {
+		uploadFilename = filePath
+	}
+
 	// Upload to IPFS
-	result, err := ipfsClient.Add(ctx, f, filename, addOpts)
+	result, err := ipfsClient.Add(ctx, f, uploadFilename, addOpts)
 	if err != nil {
 		return fmt.Errorf("failed to upload: %w", err)
 	}
@@ -1261,6 +1290,9 @@ func runScan(cfg *config.Config, ipfsClient ipfs.Client, dryRun bool) error {
 			if pin, ok := cfg.IPFS.Embedded.Options["pin"].(bool); ok {
 				addOpts.Pin = pin
 			}
+			if nocopy, ok := cfg.IPFS.Embedded.Options["nocopy"].(bool); ok {
+				addOpts.NoCopy = nocopy
+			}
 			if rawLeaves, ok := cfg.IPFS.Embedded.Options["raw_leaves"].(bool); ok {
 				addOpts.RawLeaves = rawLeaves
 			}
@@ -1269,7 +1301,13 @@ func runScan(cfg *config.Config, ipfsClient ipfs.Client, dryRun bool) error {
 			}
 		}
 
-		result, err := ipfsClient.Add(ctx, f, file.Name, addOpts)
+		// For nocopy, pass full path; otherwise just basename
+		uploadFilename := file.Name
+		if addOpts.NoCopy {
+			uploadFilename = file.Path
+		}
+
+		result, err := ipfsClient.Add(ctx, f, uploadFilename, addOpts)
 		f.Close()
 
 		if err != nil {

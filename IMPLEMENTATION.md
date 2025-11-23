@@ -34,6 +34,10 @@ A Go application for automatic publishing of media collections to IPFS with anno
 - ✅ Full IPFS operations support (add, pin, IPNS publish/resolve)
 - ✅ Repository persistence between runs
 - ✅ Graceful node shutdown
+- ✅ **Filestore (nocopy) support**: Reference files without copying (99.5% disk space savings)
+  - Files must be inside repo_path for security
+  - Enabled via `add_options.nocopy: true` in config
+  - Example: 15MB file → 80KB repo size vs 15MB with copy mode
 
 **Phase 4: PubSub announcements** ✅
 - ✅ PubSub message format with version, IPNS, collection size, timestamp
@@ -250,16 +254,26 @@ ipfs:
   external:
     api_url: "http://localhost:5001"
     timeout: 300
+    add_options:
+      nocopy: false      # Use filestore (requires external node support)
+      pin: true
+      chunker: "size-262144"
+      raw_leaves: true
     
   embedded:
     repo_path: "~/.ipfs_publisher/ipfs-repo"
     swarm_port: 4002
     api_port: 5002
     gateway_port: 8081
+    add_options:
+      nocopy: true       # Use filestore - saves 99.5% disk space!
+      pin: true
+      chunker: "size-262144"
+      raw_leaves: true
 
 # Directories to monitor
 directories:
-  - "~/test-media"
+  - "~/.ipfs_publisher/media"  # For nocopy, must be inside repo_path parent
 
 # File extensions to process
 extensions:
@@ -273,6 +287,52 @@ logging:
   file: "~/.ipfs_publisher/logs/app.log"
   console: true
 ```
+
+### Filestore (nocopy) Feature
+
+**What is it?**
+- IPFS filestore allows referencing files in place without copying them into the IPFS blocks directory
+- Dramatically reduces disk space usage (99.5% savings in testing)
+- Files are verified using their original path and checksum
+
+**Benefits:**
+- **Disk Space**: 15MB file uses only 80KB repo space (vs 15MB with copy mode)
+- **Performance**: No data duplication on writes
+- **Efficiency**: Ideal for large media collections
+
+**Requirements:**
+- Embedded mode: Enabled by default with `FilestoreEnabled` and `UrlstoreEnabled` flags
+- External mode: Requires IPFS node with filestore support
+- **Security**: Files must be inside `repo_path` or its subdirectories
+
+**Setup:**
+```yaml
+ipfs:
+  embedded:
+    repo_path: "~/.ipfs_publisher/ipfs-repo"
+    add_options:
+      nocopy: true  # Enable filestore
+
+directories:
+  - "~/.ipfs_publisher/media"  # Inside repo_path parent directory
+```
+
+**Testing Results:**
+```bash
+# With nocopy=false (copy mode):
+du -sh ~/.ipfs_publisher/ipfs-repo
+# 15M    /Users/user/.ipfs_publisher/ipfs-repo
+
+# With nocopy=true (filestore mode):
+du -sh ~/.ipfs_publisher/ipfs-repo
+# 80K    /Users/user/.ipfs_publisher/ipfs-repo
+```
+
+**Implementation Details:**
+- `internal/ipfs/repo.go`: Enables filestore flags during repo initialization
+- `internal/ipfs/embedded.go`: Add() method checks `opts.NoCopy` and uses file path vs reader
+- `cmd/ipfs-publisher/main.go`: Passes full file path when nocopy enabled
+- Config: `embedded.add_options.nocopy` and `external.add_options.nocopy`
 
 ## Testing Phase 1
 

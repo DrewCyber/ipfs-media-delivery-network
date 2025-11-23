@@ -334,6 +334,11 @@ ipfs:
     swarm_port: 4002      # P2P swarm port (default: 4002)
     api_port: 5002        # API port (default: 5002)
     gateway_port: 8081    # Gateway port (default: 8081)
+    add_options:
+      nocopy: true       # Use filestore to reference files without copying (99.5% space savings!)
+      pin: true          # Pin uploaded files
+      chunker: "size-262144"  # Chunking strategy
+      raw_leaves: true   # Use raw leaves for UnixFS
   
   # External node settings (used when mode: external)
   external:
@@ -407,9 +412,43 @@ behavior:
 #### Add Options
 
 - **pin** (boolean): Pin uploaded files to prevent garbage collection
-- **nocopy** (boolean): Use filestore (requires external node with filestore enabled)
+- **nocopy** (boolean): Use filestore to reference files in place without copying data
+  - **Embedded mode**: Supported! Saves 99.5% disk space by referencing files instead of copying
+  - **External mode**: Requires external node with filestore enabled
+  - **Important**: Files must be inside `repo_path` or its subdirectories for security
+  - **Example**: 15MB file uses only 80KB of repo space with nocopy=true vs 15MB with nocopy=false
 - **chunker** (string): Chunking strategy (e.g., "size-262144")
 - **raw_leaves** (boolean): Use raw leaves for UnixFS
+
+#### Filestore (nocopy) Setup
+
+When using `nocopy: true` in embedded mode, IPFS filestore requires files to be inside the repo path for security:
+
+**Option 1: Place media inside repo** (recommended)
+```yaml
+ipfs:
+  embedded:
+    repo_path: "~/.ipfs_publisher/ipfs-repo"
+    add_options:
+      nocopy: true
+
+directories:
+  - "~/.ipfs_publisher/media"  # Inside repo_path parent directory
+```
+
+**Option 2: Use symlinks**
+```bash
+# Create symlink from repo to your media directory
+ln -s /path/to/your/media ~/.ipfs_publisher/media
+
+# Configure to watch the symlinked directory
+directories:
+  - "~/.ipfs_publisher/media"
+```
+
+**Disk Space Savings**:
+- With `nocopy: false`: 15MB file → 15MB repo size (file copied into IPFS blocks)
+- With `nocopy: true`: 15MB file → 80KB repo size (file referenced in place) **99.5% savings!**
 
 #### PubSub Behavior by Mode
 

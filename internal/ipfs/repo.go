@@ -38,6 +38,10 @@ func InitializeRepo(repoPath string, swarmPort, apiPort, gatewayPort int) error 
 		return fmt.Errorf("failed to create default config: %w", err)
 	}
 
+	// Enable filestore and urlstore for nocopy support
+	cfg.Experimental.FilestoreEnabled = true
+	cfg.Experimental.UrlstoreEnabled = true
+
 	// Don't modify datastore - use defaults from config.Init()
 	// The default flatfs should work with the plugins we load
 

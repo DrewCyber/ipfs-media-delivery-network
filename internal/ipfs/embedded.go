@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -169,16 +170,6 @@ func (c *EmbeddedClient) Add(ctx context.Context, reader io.Reader, filename str
 		return nil, fmt.Errorf("node not started")
 	}
 
-	// Read all data from reader into memory
-	// This is necessary because files.NewReaderFile expects a ReadSeeker
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read data: %w", err)
-	}
-
-	// Create a files.Node from the data
-	fileNode := files.NewBytesFile(data)
-
 	// Build add options
 	pinName := ""
 	if opts.Pin {
@@ -195,6 +186,47 @@ func (c *EmbeddedClient) Add(ctx context.Context, reader io.Reader, filename str
 		addOpts = append(addOpts, options.Unixfs.Chunker(opts.Chunker))
 	}
 
+	// Use nocopy (filestore) if enabled
+	if opts.NoCopy {
+		addOpts = append(addOpts, options.Unixfs.Nocopy(true))
+	}
+
+	var fileNode files.Node
+	var fileSize uint64
+
+	// For nocopy mode, we need to provide a path, not a reader
+	if opts.NoCopy {
+		// NoCopy requires a file path, which should be in the filename parameter
+		// The reader should be nil or we read to get size then use the path
+		if filename == "" {
+			return nil, fmt.Errorf("nocopy mode requires a file path in filename parameter")
+		}
+
+		// Check if file exists
+		fileInfo, err := os.Stat(filename)
+		if err != nil {
+			return nil, fmt.Errorf("nocopy mode: failed to stat file: %w", err)
+		}
+		fileSize = uint64(fileInfo.Size())
+
+		// Create a file node from the path
+		fileNode, err = files.NewSerialFile(filename, false, fileInfo)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create file node from path: %w", err)
+		}
+	} else {
+		// Read all data from reader into memory
+		// This is necessary because files.NewReaderFile expects a ReadSeeker
+		data, err := io.ReadAll(reader)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read data: %w", err)
+		}
+		fileSize = uint64(len(data))
+
+		// Create a files.Node from the data
+		fileNode = files.NewBytesFile(data)
+	}
+
 	// Add the file
 	p, err := c.api.Unixfs().Add(ctx, fileNode, addOpts...)
 	if err != nil {
@@ -204,7 +236,7 @@ func (c *EmbeddedClient) Add(ctx context.Context, reader io.Reader, filename str
 	result := &AddResult{
 		CID:  p.RootCid().String(),
 		Name: filename,
-		Size: uint64(len(data)),
+		Size: fileSize,
 	}
 
 	return result, nil
