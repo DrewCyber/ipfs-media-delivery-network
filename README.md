@@ -4,7 +4,7 @@ A Go application for automatic publishing of media collections to IPFS with anno
 
 ## Features
 
-### Current (Phase 1-9 Complete)
+### Current (Phase 1-10 Complete ✅)
 
 - ✅ **Configuration Management** - YAML-based configuration with validation
 - ✅ **IPFS Integration** - External IPFS node support via HTTP API
@@ -754,6 +754,149 @@ go test ./...
 - Recovery after restart
 - Index management
 - Version tracking
+
+## Deployment
+
+### Running as a Systemd Service (Linux)
+
+1. **Create a system user** (optional but recommended):
+   ```bash
+   sudo useradd -r -s /bin/false ipfs-publisher
+   ```
+
+2. **Install the binary**:
+   ```bash
+   sudo cp ipfs-publisher /usr/local/bin/
+   sudo chmod +x /usr/local/bin/ipfs-publisher
+   ```
+
+3. **Create configuration directory**:
+   ```bash
+   sudo mkdir -p /etc/ipfs-publisher
+   sudo cp config.yaml /etc/ipfs-publisher/
+   sudo chown -R ipfs-publisher:ipfs-publisher /etc/ipfs-publisher
+   ```
+
+4. **Create systemd service file** (`/etc/systemd/system/ipfs-publisher.service`):
+   ```ini
+   [Unit]
+   Description=IPFS Media Collection Publisher
+   After=network.target
+   Wants=network-online.target
+
+   [Service]
+   Type=simple
+   User=ipfs-publisher
+   Group=ipfs-publisher
+   ExecStart=/usr/local/bin/ipfs-publisher --config /etc/ipfs-publisher/config.yaml
+   Restart=on-failure
+   RestartSec=10s
+   StandardOutput=journal
+   StandardError=journal
+   
+   # Security hardening
+   NoNewPrivileges=true
+   PrivateTmp=true
+   ProtectSystem=strict
+   ProtectHome=true
+   ReadWritePaths=/var/lib/ipfs-publisher /var/log/ipfs-publisher
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+5. **Enable and start the service**:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable ipfs-publisher
+   sudo systemctl start ipfs-publisher
+   ```
+
+6. **Check status**:
+   ```bash
+   sudo systemctl status ipfs-publisher
+   sudo journalctl -u ipfs-publisher -f
+   ```
+
+### Docker Deployment
+
+**Dockerfile**:
+```dockerfile
+FROM golang:1.21-alpine AS builder
+WORKDIR /app
+COPY . .
+RUN go build -o ipfs-publisher ./cmd/ipfs-publisher
+
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates
+WORKDIR /root/
+COPY --from=builder /app/ipfs-publisher .
+COPY config.yaml .
+VOLUME ["/root/.ipfs_publisher", "/media"]
+EXPOSE 4002 5002 8081
+CMD ["./ipfs-publisher"]
+```
+
+**docker-compose.yml**:
+```yaml
+version: '3.8'
+services:
+  ipfs-publisher:
+    build: .
+    container_name: ipfs-publisher
+    volumes:
+      - ./config.yaml:/root/config.yaml
+      - ipfs-publisher-data:/root/.ipfs_publisher
+      - /path/to/media:/media:ro
+    ports:
+      - "4002:4002"
+      - "5002:5002"
+      - "8081:8081"
+    restart: unless-stopped
+    environment:
+      - IPFS_MODE=embedded
+
+volumes:
+  ipfs-publisher-data:
+```
+
+**Run with Docker**:
+```bash
+docker-compose up -d
+docker-compose logs -f ipfs-publisher
+```
+
+### Production Best Practices
+
+1. **Use Embedded Mode** for production deployments (self-contained, reliable)
+2. **Configure Monitoring**: Set up log aggregation and alerting
+3. **Backup Keys**: Securely backup `~/.ipfs_publisher/keys/` directory
+4. **Resource Limits**: Set appropriate memory/CPU limits
+5. **Firewall Rules**: Open only necessary ports (swarm port for embedded mode)
+6. **Regular Maintenance**: Monitor repo size, run GC if needed
+7. **Testing**: Test recovery procedures (restart, crash recovery)
+8. **Updates**: Keep application and dependencies up to date
+
+### Performance Considerations
+
+**Collection Size Recommendations:**
+- **Small** (<1,000 files): Any configuration works well
+- **Medium** (1,000-10,000 files): Embedded mode recommended, 1GB+ RAM
+- **Large** (10,000-50,000 files): Embedded mode, 2GB+ RAM, SSD storage
+- **Very Large** (>50,000 files): Consider splitting into multiple collections
+
+**Resource Requirements:**
+
+| Mode | Collection Size | RAM | Disk | CPU |
+|------|----------------|-----|------|-----|
+| External | <10,000 | 200-300MB | Minimal | Low |
+| Embedded | <10,000 | 500MB-1GB | 5-10GB | Medium |
+| Embedded | 10,000-50,000 | 1-2GB | 10-50GB | Medium |
+
+**Network Requirements:**
+- Outbound: Unrestricted for DHT, bootstrap peers
+- Inbound (embedded): Port 4002 (swarm) for optimal performance
+- Bandwidth: Varies with collection size and update frequency
 
 ## Contributing
 
