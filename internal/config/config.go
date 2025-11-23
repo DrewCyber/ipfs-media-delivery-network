@@ -184,6 +184,16 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid IPFS mode: %s (must be 'external' or 'embedded')", c.IPFS.Mode)
 	}
 
+	// Validate external mode settings
+	if c.IPFS.Mode == IPFSModeExternal {
+		if c.IPFS.External.APIURL == "" {
+			return fmt.Errorf("external IPFS api_url cannot be empty")
+		}
+		if c.IPFS.External.Timeout <= 0 {
+			return fmt.Errorf("external IPFS timeout must be positive, got %d", c.IPFS.External.Timeout)
+		}
+	}
+
 	// Validate ports for embedded mode
 	if c.IPFS.Mode == IPFSModeEmbedded {
 		if err := validatePort(c.IPFS.Embedded.SwarmPort, "swarm_port"); err != nil {
@@ -235,6 +245,18 @@ func (c *Config) Validate() error {
 	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
 	if !validLevels[c.Logging.Level] {
 		return fmt.Errorf("invalid logging level: %s", c.Logging.Level)
+	}
+
+	// Validate PubSub port (if not auto-assigned)
+	if c.Pubsub.ListenPort != 0 {
+		if err := validatePort(c.Pubsub.ListenPort, "pubsub.listen_port"); err != nil {
+			return err
+		}
+	}
+
+	// Validate PubSub topic
+	if c.Pubsub.Enabled && c.Pubsub.Topic == "" {
+		return fmt.Errorf("pubsub.topic cannot be empty when PubSub is enabled")
 	}
 
 	// Validate behavior values

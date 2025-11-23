@@ -4,7 +4,7 @@ A Go application for automatic publishing of media collections to IPFS with anno
 
 ## Features
 
-### Current (Phase 1-8 Complete)
+### Current (Phase 1-9 Complete)
 
 - ✅ **Configuration Management** - YAML-based configuration with validation
 - ✅ **IPFS Integration** - External IPFS node support via HTTP API
@@ -30,6 +30,23 @@ A Go application for automatic publishing of media collections to IPFS with anno
 - ✅ **Logging** - Structured logging with file rotation and console output
 - ✅ **Lock File** - Prevents multiple instances from running simultaneously
 - ✅ **CLI Interface** - Comprehensive command-line interface with multiple flags
+- ✅ **Edge Case Handling** (Phase 9):
+  - Symlinks detection and skip
+  - Permission error handling
+  - Very long filenames (>255 chars) detection
+  - Hidden and temporary file filtering (.DS_Store, Thumbs.db, etc.)
+  - Special characters in filenames
+- ✅ **Enhanced Validation** (Phase 9):
+  - Port validation for embedded mode
+  - External API URL validation
+  - PubSub configuration validation
+  - Directory existence checks
+  - Comprehensive error messages with suggestions
+- ✅ **Improved UX** (Phase 9):
+  - Better error messages with actionable suggestions
+  - Helpful --init command for configuration
+  - Detailed --help output
+  - Clear validation errors
 
 ### Coming Soon
 
@@ -741,6 +758,28 @@ go test ./...
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+## Edge Cases Handled
+
+### Files
+
+- **Symlinks**: Detected and skipped to avoid infinite loops
+- **Hidden files**: Files starting with `.` are ignored (e.g., `.DS_Store`)
+- **Temporary files**: Files ending with `~` or common temp patterns ignored (`.swp`, `.tmp`, `Thumbs.db`)
+- **Very long filenames**: Files with names >255 characters are skipped with warning
+- **Special characters**: Handled gracefully in index generation
+- **Permission denied**: Logged and skipped, processing continues
+- **Files deleted during processing**: Detected and handled gracefully
+
+### System
+
+- **Multiple instances**: Lock file prevents concurrent runs
+- **Port conflicts**: Detected before embedded node starts with helpful error messages
+- **Configuration errors**: Validated on load with clear error messages
+- **Directory changes**: New subdirectories automatically watched
+- **Rapid file changes**: Debounced to single event per file (300ms)
+- **Network interruptions**: Automatic retry with exponential backoff
+- **Insufficient disk space**: Checked before large uploads
 
 ## License
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/atregu/ipfs-publisher/internal/logger"
+	"github.com/atregu/ipfs-publisher/internal/utils"
 )
 
 // FileInfo represents information about a scanned file
@@ -62,6 +63,11 @@ func (s *Scanner) Scan() ([]FileInfo, error) {
 
 		err = filepath.Walk(expandedDir, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
+				// Handle permission errors gracefully
+				if os.IsPermission(err) {
+					log.Warnf("Permission denied: %s (skipping)", path)
+					return nil
+				}
 				log.Warnf("Error accessing path %s: %v", path, err)
 				return nil
 			}
@@ -70,13 +76,15 @@ func (s *Scanner) Scan() ([]FileInfo, error) {
 				return nil
 			}
 
-			if strings.HasPrefix(info.Name(), ".") {
-				log.Debugf("Skipping hidden file: %s", path)
+			// Check for symlinks
+			if info.Mode()&os.ModeSymlink != 0 {
+				log.Debugf("Skipping symbolic link: %s", path)
 				return nil
 			}
 
-			if strings.HasSuffix(info.Name(), "~") || strings.HasPrefix(info.Name(), "~") {
-				log.Debugf("Skipping temporary file: %s", path)
+			// Use utility function to check if file should be ignored
+			if utils.ShouldIgnoreFile(info.Name()) {
+				log.Debugf("Skipping ignored file: %s", path)
 				return nil
 			}
 
@@ -90,6 +98,12 @@ func (s *Scanner) Scan() ([]FileInfo, error) {
 
 			if !s.extensions[ext] {
 				log.Debugf("Skipping file with non-matching extension: %s", path)
+				return nil
+			}
+
+			// Check filename length
+			if len(info.Name()) > utils.MaxFilenameLength {
+				log.Warnf("Filename too long (%d chars), skipping: %s", len(info.Name()), path)
 				return nil
 			}
 
