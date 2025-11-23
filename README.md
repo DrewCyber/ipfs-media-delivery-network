@@ -11,7 +11,9 @@ A Go application for automatic publishing of media collections to IPFS with anno
 - ✅ **Embedded IPFS Node** - Built-in IPFS node with custom ports and repository
 - ✅ **File Upload** - Upload files to IPFS with configurable options (pin, raw-leaves)
 - ✅ **IPNS Support** - Publish and resolve IPNS names (works with both modes)
-- ✅ **PubSub Announcements** - Standalone libp2p PubSub node with DHT peer discovery
+- ✅ **PubSub Announcements** - Mode-aware PubSub support:
+  - **Embedded mode**: Uses embedded IPFS node's PubSub (single libp2p instance)
+  - **External mode**: Standalone libp2p PubSub node with DHT peer discovery
 - ✅ **Message Signing** - Ed25519 signature support for announcements
 - ✅ **Directory Scanning** - Recursive scanning with extension filtering
 - ✅ **NDJSON Index** - Media collection index with sequential IDs
@@ -154,6 +156,46 @@ Expected output:
 
 Verifies connectivity to your IPFS node and displays version information.
 
+#### Show Peer Information
+
+```bash
+./ipfs-publisher --peer-info
+```
+
+Displays detailed peer information for your IPFS node and PubSub node:
+- **Embedded mode**: Shows IPFS node's peer ID and listen addresses
+- **External mode**: Shows both external IPFS peer ID and standalone PubSub node details
+- Includes connection commands for subscribing to announcements from other nodes
+
+Example output (external mode):
+```
+IPFS Node Information:
+Mode: external
+
+IPFS Peer ID: 12D3KooWNZ9Ma5sMmcr3brheC685dgrKJaM9SdhZrHojpKfywjg4
+API URL: http://localhost:5001
+
+=== Standalone PubSub Node (External Mode) ===
+Initializing standalone PubSub node...
+
+PubSub Peer ID: 12D3KooWXYZ123...
+Topic: mdn/collections/announce
+Connected peers: 8
+Topic peers: 2
+
+Listen addresses:
+  /ip4/192.168.1.100/tcp/35421/p2p/12D3KooWXYZ123...
+  /ip4/127.0.0.1/tcp/35421/p2p/12D3KooWXYZ123...
+
+=== To receive PubSub messages from this node ===
+Run this command from your IPFS node:
+
+  ipfs swarm connect /ip4/192.168.1.100/tcp/35421/p2p/12D3KooWXYZ123...
+
+Then subscribe to announcements:
+  ipfs pubsub sub mdn/collections/announce
+```
+
 #### Upload a Test File
 
 ```bash
@@ -253,8 +295,13 @@ ipfs:
 
 # PubSub configuration
 pubsub:
+  enabled: true
   topic: "mdn/collections/announce"
-  announce_interval: 3600  # seconds
+  announce_interval: 3600  # seconds (default: 1 hour)
+  
+  # External mode only: Standalone libp2p node settings
+  # (Embedded mode uses IPFS node's PubSub on same port)
+  listen_port: 0  # Random port for standalone node (external mode only)
   bootstrap_peers: []  # Optional: custom bootstrap peers (uses IPFS defaults if empty)
 
 # Directories to monitor
@@ -311,6 +358,40 @@ behavior:
 - **nocopy** (boolean): Use filestore (requires external node with filestore enabled)
 - **chunker** (string): Chunking strategy (e.g., "size-262144")
 - **raw_leaves** (boolean): Use raw leaves for UnixFS
+
+#### PubSub Behavior by Mode
+
+The application uses different PubSub implementations depending on IPFS mode:
+
+**Embedded Mode** (Phase 7):
+- Uses the embedded IPFS node's native PubSub capability
+- Single libp2p instance (IPFS + PubSub share the same peer ID and ports)
+- PubSub peers automatically discovered via IPFS DHT
+- No additional network ports required
+- More efficient as it leverages existing IPFS connections
+- Example: Peer ID `QmVh3Xa5azQXtiyYaUh4VjxcfPEyPFa6PWy6z9MQ1VoW86` on port 4002
+
+**External Mode** (Phase 7.1):
+- Creates a standalone lightweight libp2p PubSub node
+- Separate libp2p instance (different peer ID from IPFS node)
+- Required because IPFS Desktop removed PubSub HTTP API endpoint
+- Uses DHT with IPFS bootstrap peers for peer discovery
+- Configurable port (default: random) via `pubsub.listen_port`
+- Minimal resource overhead (only PubSub, no full IPFS functionality)
+
+**Message Format**:
+```json
+{
+  "version": 1,
+  "ipns": "k2k4r8...",
+  "publicKey": "CAASogEw...",
+  "collectionSize": 42,
+  "timestamp": 1700000000,
+  "signature": "base64_sig..."
+}
+```
+
+All messages are signed with Ed25519 for authenticity verification.
 
 #### Logging Levels
 
@@ -479,6 +560,68 @@ The application stores its data in `~/.ipfs_publisher/`:
 **Solution**:
 1. Check if another instance is running: `ps aux | grep ipfs-publisher`
 2. If not, remove stale lock file: `rm ~/.ipfs_publisher/.ipfs_publisher.lock`
+
+### IPNS Publish Timeout (External Mode)
+
+**Problem**: `Failed to publish IPNS: context deadline exceeded` or stuck on "Publishing to IPNS..."
+
+**Cause**: External IPFS node is not responding, hung, or has DHT/networking issues
+
+**Solutions**:
+1. **Restart external IPFS daemon**:
+   ```bash
+   # Stop IPFS
+   ipfs shutdown
+   # Or kill IPFS Desktop
+   
+   # Start again
+   ipfs daemon
+   # Or restart IPFS Desktop
+   ```
+
+2. **Check IPFS daemon is actually running**:
+   ```bash
+   ipfs id
+   # Should return peer information immediately
+   ```
+
+3. **Verify IPFS API is responding**:
+   ```bash
+   curl http://localhost:5001/api/v0/version
+   # Should return version info quickly
+   ```
+
+4. **Check DHT connectivity** (IPNS requires DHT):
+   ```bash
+   ipfs stats dht
+   # Should show routing table with peers
+   ```
+
+5. **Use embedded mode instead** (recommended):
+   ```bash
+   # Edit config.yaml:
+   # ipfs:
+   #   mode: "embedded"
+   
+   ./ipfs-publisher --ipfs-mode embedded
+   ```
+   Embedded mode is more reliable as it doesn't depend on external IPFS daemon health.
+
+6. **Increase timeout** (if external mode is required):
+   ```yaml
+   # In config.yaml:
+   ipfs:
+     external:
+       timeout: 600  # Increase from 300 to 600 seconds
+   ```
+
+7. **Check IPFS daemon logs** for errors:
+   ```bash
+   # If running ipfs daemon manually, check its terminal output
+   # For IPFS Desktop, check: ~/.ipfs/logs/
+   ```
+
+**Note**: IPNS publishing can be slow on external IPFS nodes with poor DHT connectivity. Embedded mode provides better control and reliability.
 
 ### Files Not Being Pinned
 

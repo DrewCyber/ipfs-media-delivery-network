@@ -271,6 +271,32 @@ func (n *Node) GetTopicPeerCount() int {
 	return len(n.topic.ListPeers())
 }
 
+// GetPeerID returns the node's peer ID
+func (n *Node) GetPeerID() string {
+	if n.host == nil {
+		return ""
+	}
+	return n.host.ID().String()
+}
+
+// GetListenAddresses returns the node's listen addresses
+func (n *Node) GetListenAddresses() []string {
+	if n.host == nil {
+		return nil
+	}
+
+	addrs := n.host.Addrs()
+	result := make([]string, 0, len(addrs))
+
+	for _, addr := range addrs {
+		// Combine address with peer ID
+		fullAddr := fmt.Sprintf("%s/p2p/%s", addr.String(), n.host.ID().String())
+		result = append(result, fullAddr)
+	}
+
+	return result
+}
+
 // Stop stops the PubSub node
 func (n *Node) Stop() error {
 	n.mu.Lock()

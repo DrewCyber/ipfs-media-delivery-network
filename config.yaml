@@ -35,7 +35,7 @@ ipfs:
 pubsub:
   enabled: true  # Enable PubSub announcements
   topic: "mdn/collections/announce"
-  announce_interval: 10  # seconds (1 hour)
+  announce_interval: 3600  # seconds (1 hour)
   bootstrap_peers: []
   listen_port: 0  # 0 = random port
 
