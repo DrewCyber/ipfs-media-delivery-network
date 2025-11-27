@@ -350,6 +350,10 @@ ipfs:
       chunker: "size-262144"  # Chunking strategy
       raw_leaves: true   # Use raw leaves for UnixFS
 
+    # Application base directory (where keys, state, index and logs are stored)
+    # Default: ~/.ipfs_publisher
+    base_dir: "~/.ipfs_publisher"
+
 # PubSub configuration
 pubsub:
   enabled: true

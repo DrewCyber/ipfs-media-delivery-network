@@ -108,7 +108,7 @@ func (w *Watcher) Start(directories []string) error {
 
 	// Add directories to watch
 	for _, dir := range directories {
-		// Expand ~ in path
+		// Expand ~ in path and make absolute/clean
 		expandedDir := expandPath(dir)
 
 		// Walk directory tree and add all subdirectories
@@ -224,8 +224,15 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 
 	// Debounce the event
 	w.debouncer.debounce(event.Name, func() {
+		absName := event.Name
+		if p, err := filepath.Abs(event.Name); err == nil {
+			absName = filepath.Clean(p)
+		} else {
+			absName = filepath.Clean(event.Name)
+		}
+
 		w.eventChan <- FileEvent{
-			Path:      event.Name,
+			Path:      absName,
 			EventType: eventType,
 			Timestamp: time.Now(),
 		}
@@ -315,8 +322,12 @@ func expandPath(path string) string {
 	if len(path) > 0 && path[0] == '~' {
 		home, err := os.UserHomeDir()
 		if err == nil {
-			return filepath.Join(home, path[1:])
+			path = filepath.Join(home, path[1:])
 		}
 	}
-	return path
+
+	if abs, err := filepath.Abs(path); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(path)
 }

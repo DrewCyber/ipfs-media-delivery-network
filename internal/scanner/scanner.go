@@ -76,7 +76,7 @@ func (s *Scanner) Scan() ([]FileInfo, error) {
 				return nil
 			}
 
-			// Check for symlinks
+			// Check for symlinks (skip linking files; symlinked directories are handled by Walk)
 			if info.Mode()&os.ModeSymlink != 0 {
 				log.Debugf("Skipping symbolic link: %s", path)
 				return nil
@@ -107,8 +107,16 @@ func (s *Scanner) Scan() ([]FileInfo, error) {
 				return nil
 			}
 
+			// Use cleaned absolute path for consistency
+			absPath := path
+			if p, err := filepath.Abs(path); err == nil {
+				absPath = filepath.Clean(p)
+			} else {
+				absPath = filepath.Clean(path)
+			}
+
 			files = append(files, FileInfo{
-				Path:      path,
+				Path:      absPath,
 				Name:      info.Name(),
 				Extension: ext,
 				Size:      info.Size(),

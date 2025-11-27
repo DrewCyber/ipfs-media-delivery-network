@@ -83,6 +83,7 @@ type Config struct {
 	Extensions  []string       `mapstructure:"extensions"`
 	Logging     LoggingConfig  `mapstructure:"logging"`
 	Behavior    BehaviorConfig `mapstructure:"behavior"`
+	BaseDir     string         `mapstructure:"base_dir"`
 }
 
 // Load loads configuration from the specified file
@@ -150,6 +151,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("behavior.batch_size", 10)
 	v.SetDefault("behavior.progress_bar", true)
 	v.SetDefault("behavior.state_save_interval", 60)
+	v.SetDefault("base_dir", "~/.ipfs_publisher")
 }
 
 // expandPaths expands ~ in file paths
@@ -164,15 +166,46 @@ func (c *Config) expandPaths() {
 		c.Logging.File = filepath.Join(home, c.Logging.File[1:])
 	}
 
+	// Make logging file path absolute and clean
+	if c.Logging.File != "" {
+		if abs, err := filepath.Abs(c.Logging.File); err == nil {
+			c.Logging.File = filepath.Clean(abs)
+		}
+	}
+
 	// Expand embedded repo path
 	if strings.HasPrefix(c.IPFS.Embedded.RepoPath, "~") {
 		c.IPFS.Embedded.RepoPath = filepath.Join(home, c.IPFS.Embedded.RepoPath[1:])
 	}
 
-	// Expand directories
+	// Make embedded repo path absolute and clean
+	if c.IPFS.Embedded.RepoPath != "" {
+		if abs, err := filepath.Abs(c.IPFS.Embedded.RepoPath); err == nil {
+			c.IPFS.Embedded.RepoPath = filepath.Clean(abs)
+		}
+	}
+
+	// Expand directories and make absolute/clean
 	for i, dir := range c.Directories {
 		if strings.HasPrefix(dir, "~") {
-			c.Directories[i] = filepath.Join(home, dir[1:])
+			dir = filepath.Join(home, dir[1:])
+		}
+		if abs, err := filepath.Abs(dir); err == nil {
+			c.Directories[i] = filepath.Clean(abs)
+		} else {
+			c.Directories[i] = filepath.Clean(dir)
+		}
+	}
+
+	// Expand and canonicalize BaseDir
+	if strings.HasPrefix(c.BaseDir, "~") {
+		c.BaseDir = filepath.Join(home, c.BaseDir[1:])
+	}
+	if c.BaseDir != "" {
+		if abs, err := filepath.Abs(c.BaseDir); err == nil {
+			c.BaseDir = filepath.Clean(abs)
+		} else {
+			c.BaseDir = filepath.Clean(c.BaseDir)
 		}
 	}
 }

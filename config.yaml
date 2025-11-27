@@ -17,7 +17,8 @@ ipfs:
   
   # Embedded node settings (used when mode: embedded)
   embedded:
-    repo_path: "~/.ipfs_publisher/ipfs-repo"
+    # repo_path: "~/.ipfs_publisher/ipfs-repo"
+    repo_path: "./ipfs_publisher/ipfs-repo"
     swarm_port: 4002
     api_port: 5002
     gateway_port: 8081
@@ -37,14 +38,19 @@ ipfs:
 pubsub:
   enabled: true  # Enable PubSub announcements
   topic: "mdn/collections/announce"
-  announce_interval: 3600  # seconds (1 hour)
+  # announce_interval: 3600  # seconds (1 hour)
+  announce_interval: 15
   bootstrap_peers: []
   listen_port: 0  # 0 = random port
 
+# Application base directory (where keys, state, index and logs are stored)
+# Default: ~/.ipfs_publisher
+base_dir: "~/.ipfs_publisher"
+
 # Directories to monitor
 directories:
-  # - "./test-media"
-  - "~/.ipfs_publisher/media"  # For nocopy mode, directories must be inside or symlinked to repo_path
+  - "./ipfs_publisher/ipfs-repo/media"
+  # - "~/.ipfs_publisher/media"  # For nocopy mode, directories must be inside or symlinked to repo_path
 
 # File extensions to process (case-insensitive)
 extensions:
@@ -58,7 +64,7 @@ extensions:
 # Logging
 logging:
   level: "info"  # debug, info, warn, error
-  file: "~/.ipfs_publisher/logs/app.log"
+  file: "./ipfs_publisher/logs/app.log"
   max_size: 100  # MB
   max_backups: 5
   console: true

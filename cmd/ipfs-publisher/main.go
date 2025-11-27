@@ -119,8 +119,8 @@ func main() {
 	logger.Infof("Starting ipfs-publisher version %s", version)
 	logger.Infof("IPFS mode: %s", cfg.IPFS.Mode)
 
-	// Acquire lock file
-	baseDir := getBaseDir()
+	// Acquire lock file using configured base dir (if set)
+	baseDir := getEffectiveBaseDir(cfg)
 	lock := lockfile.New(baseDir)
 	if err := lock.Acquire(); err != nil {
 		logger.Fatalf("Failed to acquire lock: %v", err)
@@ -264,7 +264,7 @@ func main() {
 					ipns := stateManager.GetIPNS()
 					if ipns != "" {
 						ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-						if err := publishAnnouncementViaIPFS(ctx, ipfsClient, cfg.Pubsub.Topic, ipns, len(stateManager.GetAllFiles()), stateManager.GetVersion()); err != nil {
+						if err := publishAnnouncementViaIPFS(ctx, ipfsClient, cfg, cfg.Pubsub.Topic, ipns, len(stateManager.GetAllFiles()), stateManager.GetVersion()); err != nil {
 							logger.Warnf("Failed to publish initial announcement: %v", err)
 						} else {
 							logger.Info("✓ Initial announcement published")
@@ -293,7 +293,7 @@ func main() {
 					ipns := stateManager.GetIPNS()
 					if ipns != "" {
 						ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-						if err := publishAnnouncementViaStandalone(ctx, pubsubNode, cfg.Pubsub.Topic, ipns, len(stateManager.GetAllFiles()), stateManager.GetVersion()); err != nil {
+						if err := publishAnnouncementViaStandalone(ctx, pubsubNode, cfg, cfg.Pubsub.Topic, ipns, len(stateManager.GetAllFiles()), stateManager.GetVersion()); err != nil {
 							logger.Warnf("Failed to publish initial announcement: %v", err)
 						} else {
 							logger.Info("✓ Initial announcement published")
@@ -390,6 +390,10 @@ pubsub:
   bootstrap_peers: []
   listen_port: 0  # 0 = random port
 
+# Application base directory (where keys, state, index and logs are stored)
+# Default: ~/.ipfs_publisher
+base_dir: "~/.ipfs_publisher"
+
 # Directories to monitor
 directories:
   - "/path/to/media1"
@@ -448,6 +452,14 @@ func getBaseDir() string {
 	return baseDir
 }
 
+// getEffectiveBaseDir returns the configured BaseDir if set, otherwise falls back to getBaseDir().
+func getEffectiveBaseDir(cfg *config.Config) string {
+	if cfg != nil && cfg.BaseDir != "" {
+		return cfg.BaseDir
+	}
+	return getBaseDir()
+}
+
 // createIPFSClient creates an IPFS client based on configuration
 func createIPFSClient(cfg *config.Config) (ipfs.Client, error) {
 	if cfg.IPFS.Mode == config.IPFSModeExternal {
@@ -501,7 +513,7 @@ func initPubSub(cfg *config.Config) (*pubsub.Publisher, error) {
 	}
 
 	// Load or generate keys for message signing
-	keyMgr := keys.New(filepath.Join(getBaseDir(), "keys"))
+	keyMgr := keys.New(filepath.Join(getEffectiveBaseDir(cfg), "keys"))
 	if err := keyMgr.Initialize(); err != nil {
 		node.Stop()
 		return nil, fmt.Errorf("failed to initialize keys: %w", err)
@@ -626,7 +638,23 @@ func testFileUpload(client ipfs.Client, filePath string, cfg *config.Config) err
 	// For nocopy, pass full path; otherwise just basename
 	filename := filepath.Base(filePath)
 	if addOpts.NoCopy {
-		filename = filePath
+		// Ensure we have absolute cleaned paths
+		fileAbs, err := filepath.Abs(filePath)
+		if err != nil {
+			return fmt.Errorf("failed to resolve file path: %w", err)
+		}
+
+		// If embedded mode, validate file is inside repo path
+		if cfg.IPFS.Mode == config.IPFSModeEmbedded {
+			repoRoot := cfg.IPFS.Embedded.RepoPath
+			if ok, err := isSubpath(repoRoot, filepath.Clean(fileAbs)); err != nil {
+				return fmt.Errorf("failed to validate filestore path: %w", err)
+			} else if !ok {
+				return fmt.Errorf("cannot add filestore reference: file %s is outside ipfs repo root %s", fileAbs, repoRoot)
+			}
+		}
+
+		filename = fileAbs
 	}
 
 	logger.Info("Uploading to IPFS...")
@@ -649,7 +677,7 @@ func testFileUpload(client ipfs.Client, filePath string, cfg *config.Config) err
 }
 
 // publishAnnouncementViaIPFS publishes a PubSub announcement via embedded IPFS node's PubSub
-func publishAnnouncementViaIPFS(ctx context.Context, client ipfs.Client, topic string, ipns string, collectionSize int, version int) error {
+func publishAnnouncementViaIPFS(ctx context.Context, client ipfs.Client, cfg *config.Config, topic string, ipns string, collectionSize int, version int) error {
 	// Only works with embedded IPFS client
 	embeddedClient, ok := client.(*ipfs.EmbeddedClient)
 	if !ok {
@@ -660,7 +688,7 @@ func publishAnnouncementViaIPFS(ctx context.Context, client ipfs.Client, topic s
 	msg := pubsub.NewAnnouncementMessage(version, ipns, collectionSize, time.Now().Unix())
 
 	// Load keys for signing
-	keyMgr := keys.New(filepath.Join(getBaseDir(), "keys"))
+	keyMgr := keys.New(filepath.Join(getEffectiveBaseDir(cfg), "keys"))
 	if err := keyMgr.Initialize(); err != nil {
 		return fmt.Errorf("failed to initialize keys: %w", err)
 	}
@@ -705,12 +733,12 @@ func initPubSubNode(cfg *config.Config) (*pubsub.Node, error) {
 }
 
 // publishAnnouncementViaStandalone publishes a PubSub announcement via standalone libp2p node
-func publishAnnouncementViaStandalone(ctx context.Context, node *pubsub.Node, topic string, ipns string, collectionSize int, version int) error {
+func publishAnnouncementViaStandalone(ctx context.Context, node *pubsub.Node, cfg *config.Config, topic string, ipns string, collectionSize int, version int) error {
 	// Create announcement message
 	msg := pubsub.NewAnnouncementMessage(version, ipns, collectionSize, time.Now().Unix())
 
 	// Load keys for signing
-	keyMgr := keys.New(filepath.Join(getBaseDir(), "keys"))
+	keyMgr := keys.New(filepath.Join(getEffectiveBaseDir(cfg), "keys"))
 	if err := keyMgr.Initialize(); err != nil {
 		return fmt.Errorf("failed to initialize keys: %w", err)
 	}
@@ -758,7 +786,7 @@ func runPeriodicAnnouncementsStandalone(cfg *config.Config, node *pubsub.Node) {
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		err := publishAnnouncementViaStandalone(ctx, node, cfg.Pubsub.Topic, ipns, len(stateManager.GetAllFiles()), stateManager.GetVersion())
+		err := publishAnnouncementViaStandalone(ctx, node, cfg, cfg.Pubsub.Topic, ipns, len(stateManager.GetAllFiles()), stateManager.GetVersion())
 		cancel()
 
 		if err != nil {
@@ -767,6 +795,37 @@ func runPeriodicAnnouncementsStandalone(cfg *config.Config, node *pubsub.Node) {
 			log.Infof("✓ Periodic announcement published (version %d, peers: %d)", stateManager.GetVersion(), node.GetTopicPeerCount())
 		}
 	}
+}
+
+// isSubpath reports whether child is inside parent directory. Both paths should be absolute or
+// will be made absolute. Returns (true, nil) if child is within parent.
+func isSubpath(parent, child string) (bool, error) {
+	if parent == "" || child == "" {
+		return false, fmt.Errorf("empty path")
+	}
+
+	pAbs, err := filepath.Abs(parent)
+	if err != nil {
+		return false, err
+	}
+	cAbs, err := filepath.Abs(child)
+	if err != nil {
+		return false, err
+	}
+
+	pClean := filepath.Clean(pAbs)
+	cClean := filepath.Clean(cAbs)
+
+	rel, err := filepath.Rel(pClean, cClean)
+	if err != nil {
+		return false, err
+	}
+
+	// If rel starts with '..' then child is outside parent
+	if rel == ".." || strings.HasPrefix(rel, fmt.Sprintf("..%c", filepath.Separator)) {
+		return false, nil
+	}
+	return true, nil
 }
 
 // runPeriodicAnnouncementsEmbedded runs periodic PubSub announcements for embedded IPFS mode
@@ -790,7 +849,7 @@ func runPeriodicAnnouncementsEmbedded(cfg *config.Config, client ipfs.Client) {
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		err := publishAnnouncementViaIPFS(ctx, client, cfg.Pubsub.Topic, ipns, len(stateManager.GetAllFiles()), stateManager.GetVersion())
+		err := publishAnnouncementViaIPFS(ctx, client, cfg, cfg.Pubsub.Topic, ipns, len(stateManager.GetAllFiles()), stateManager.GetVersion())
 		cancel()
 
 		if err != nil {
@@ -1077,7 +1136,19 @@ func processFile(ctx context.Context, cfg *config.Config, ipfsClient ipfs.Client
 	// For nocopy, pass full path; otherwise just basename
 	uploadFilename := filename
 	if addOpts.NoCopy {
-		uploadFilename = filePath
+		fileAbs, err := filepath.Abs(filePath)
+		if err != nil {
+			return fmt.Errorf("failed to resolve file path: %w", err)
+		}
+		if cfg.IPFS.Mode == config.IPFSModeEmbedded {
+			repoRoot := cfg.IPFS.Embedded.RepoPath
+			if ok, err := isSubpath(repoRoot, filepath.Clean(fileAbs)); err != nil {
+				return fmt.Errorf("failed to validate filestore path: %w", err)
+			} else if !ok {
+				return fmt.Errorf("file %s is outside ipfs repo root %s", fileAbs, repoRoot)
+			}
+		}
+		uploadFilename = fileAbs
 	}
 
 	// Upload to IPFS
