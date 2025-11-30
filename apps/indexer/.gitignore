@@ -1,0 +1,24 @@
+# Binary
+ipfs-indexer
+
+# Data directory
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# IPFS repository
+ipfs_indexer_repo/
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
