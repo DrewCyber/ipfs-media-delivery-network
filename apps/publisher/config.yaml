@@ -18,7 +18,7 @@ ipfs:
   # Embedded node settings (used when mode: embedded)
   embedded:
     # repo_path: "~/.ipfs_publisher/ipfs-repo"
-    repo_path: "./ipfs_publisher/ipfs-repo"
+    repo_path: "./ipfs_publisher_repo/ipfs-repo"
     swarm_port: 4002
     api_port: 5002
     gateway_port: 8081
@@ -49,7 +49,7 @@ base_dir: "~/.ipfs_publisher"
 
 # Directories to monitor
 directories:
-  - "./ipfs_publisher/ipfs-repo/media"
+  - "./ipfs_publisher_repo/ipfs-repo/media"
   # - "~/.ipfs_publisher/media"  # For nocopy mode, directories must be inside or symlinked to repo_path
 
 # File extensions to process (case-insensitive)
@@ -64,7 +64,7 @@ extensions:
 # Logging
 logging:
   level: "info"  # debug, info, warn, error
-  file: "./ipfs_publisher/logs/app.log"
+  file: "./ipfs_publisher_repo/logs/app.log"
   max_size: 100  # MB
   max_backups: 5
   console: true

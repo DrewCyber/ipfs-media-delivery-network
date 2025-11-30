@@ -1,9 +1,9 @@
 # Binaries
-/ipfs-publisher
+ipfs-publisher
 
 # Test data
 /test-media/
-/ipfs_publisher/
+ipfs_publisher_repo/
 
 # Docs
 /notes/
